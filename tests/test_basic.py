@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from main import com_number, build_macro, ttl_quoted
+from main import com_number, build_macro, ttl_quoted, RECORDS
 
 class Tests(unittest.TestCase):
     def test_valid_port(self):
@@ -14,10 +14,19 @@ class Tests(unittest.TestCase):
                 com_number(s)
     def test_macro(self):
         ttl = build_macro(3, Path('C:/temp/status.txt'), Path('C:/temp/raw.log'))
-        for s in ['/C=3', '/BAUD=115200', 'qa123', 'enable', 'config terminal', 'interface gpon 0/1', 'gpon-olt(config-pon-0/1)#', 'FAIL|LOGIN']:
+        for s in ['/C=3', '/BAUD=115200', 'qa123', 'enable', 'config terminal', 'interface gpon 0/1', 'gpon-olt(config-pon-0/1)#', 'FAIL|LOGIN', 'PROMPT|LOGIN', 'CONNECTED|SERIAL']:
             self.assertIn(s, ttl)
+        self.assertIn('if result <> 2 goto CONNECT_FAIL', ttl)
+        self.assertNotIn('if result != 2', ttl)
         self.assertNotIn('/CDATABIT=', ttl)  # legacy compatible launch arguments
         self.assertNotIn('messagebox', ttl)  # avoid modal block
+    def test_records_directory_creation(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temp:
+            nested = Path(temp) / 'V3600GS_Connect' / 'records'
+            nested.mkdir(parents=True, exist_ok=True)
+            self.assertTrue(nested.is_dir())
+
     def test_ttl_escape(self):
         for bad in ["C:/can't/test", 'C:/bad\nname']:
             with self.assertRaises(ValueError):

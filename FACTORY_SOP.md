@@ -1,12 +1,19 @@
-# Factory SOP — V3600GS Connection Proof Test
+# V3600GS Connect V1.0.3
 
-1. Connect USB-Enhanced-SERIAL adapter to PC and console port of V3600GS; power on OLT.
-2. Close existing Tera Term sessions on that COM port.
-3. Start the EXE downloaded from GitHub Actions. Python is not required on this PC.
-4. Verify Tera Term executable path. If not found, Browse to `C:\Program Files (x86)\teraterm\ttpmacro.exe`.
-5. Click Refresh COM and choose USB-Enhanced-SERIAL COM port.
-6. Click Connect & Auto Login; inspect the Tera Term window title for COM and `115200baud`.
-7. Under Setup → Serial port, confirm 8 data bits, parity none, stop 1, flow control none (legacy environment compatibility check).
-8. Wait for GUI READY and `gpon-olt(config-pon-0/1)#` in terminal.
-9. If FAIL, provide a screenshot of Tera Term and the contents of `%LOCALAPPDATA%\V3600GS_Connect\records` (mask any secrets).
-10. Once the login test passes, proceed with ONU CLI command collection.
+First-stage Tera Term Serial auto-login. Windows 11, GitHub Actions EXE; no Python required on test PC.
+
+## Where are records?
+Records are **not** saved beside the EXE. Use GUI **Open Records Folder**, or press Win+R and enter:
+`%LOCALAPPDATA%\V3600GS_Connect\records`
+
+`execution.log` records button click, macro creation, process launch, prompt milestones and errors. A time-stamped folder stores the generated `connect.ttl`, `stage.txt`, `status.txt`, and `serial.log` when available. The generated TTL contains embedded credentials, **do not share it unredacted**.
+
+## Operation
+1. Close other sessions holding the COM port.
+2. Start EXE, verify USB-Enhanced-SERIAL port selected.
+3. Click Connect & Auto Login once.
+4. Observe Tera Term, 115200, user-mode → enable → config → GPON 0/1.
+5. If unsuccessful, open records folder and share `execution.log`, `stage.txt`, `status.txt`, redacted `serial.log`, plus screenshot (do not share `connect.ttl`).
+
+## Verification status
+Syntax / tests can run in GitHub Actions. Physical serial + 2011 Tera Term **not validated** without factory setup.

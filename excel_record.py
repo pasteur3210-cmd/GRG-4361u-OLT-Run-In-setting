@@ -11,13 +11,14 @@ from pathlib import Path
 from zipfile import ZipFile, ZIP_DEFLATED
 from xml.sax.saxutils import escape
 
-FIELDS = [('status','Status'), ('data_flag','Data Flag'), ('port_id','PON/ONU'),
+FIELDS = [('status','ONU Result'), ('gpon_sn','GPON SN'), ('phase_state','Phase State'),
+          ('admin_state','Admin State'), ('omcc_state','OMCC State'), ('channel','Channel'), ('data_flag','Data Flag'), ('port_id','PON/ONU'),
           ('last_regist','Last Regist'), ('last_deregist','Last Deregist'),
           ('dereg_reason','Dereg Reason'), ('alive','Alive Time'),
           ('rx','ONU Rx'), ('tx','ONU Tx'), ('voltage','Voltage(V)'),
           ('current','Bias(mA)'), ('temperature','Temp(C)'),
           ('response','Response'), ('alarm','Alarm')]
-BASE_HEADERS = ['Cycle','Check Time','Check Result','ONU Count']
+BASE_HEADERS = ['Cycle','Check Time','Overall Result','ONU Count','Cycle Error']
 
 
 def col_name(idx):
@@ -91,6 +92,8 @@ def build_rows(cycles, expected_onu_ids=None):
     if any(not isinstance(onu, int) or isinstance(onu, bool) or onu <= 0 for onu in known_ids):
         raise ValueError('ONU IDs must be positive integers')
     ids = sorted(known_ids)
+    if len(BASE_HEADERS) + len(ids)*len(FIELDS) > 16384:
+        raise ValueError('Excel column limit exceeded')
     columns = BASE_HEADERS[:]
     for onu in ids:
         columns.extend(f'ONU{onu}_{label}' for _, label in FIELDS)
@@ -99,30 +102,55 @@ def build_rows(cycles, expected_onu_ids=None):
     for i, cycle in enumerate(cycles, 1):
         units = cycle['onus']
         ts = cycle['time']
-        complete = bool(units) and all(item.get('data_flag') == 'OK' for item in units.values())
-        if any(onu not in units for onu in ids):
-            complete = False
-        result = 'DATA RECORDED (STATUS UNVERIFIED)' if complete else 'DATA INCOMPLETE'
-        row = [i, ts, result, len(units)]
+        expected = set(ids)
+        missing_ids = expected - set(units)
+        if cycle.get('result'):
+            result = cycle['result']
+        elif cycle.get('error'):
+            result = 'ERROR'
+        elif any(item.get('status') == 'FAIL' for item in units.values()):
+            result = 'FAIL'
+        elif missing_ids or any(item.get('status') != 'PASS' or item.get('data_flag') != 'OK'
+                                for item in units.values()):
+            result = 'INCOMPLETE'
+        else:
+            result = 'PASS'
+        row = [cycle.get('cycle', i), ts, result, len(units), cycle.get('error', '')]
         for onu in ids:
             if onu in units:
                 item = units[onu]
                 row.extend(item.get(k) for k, _ in FIELDS)
-                detail.append([i, ts, onu] + [item.get(k) for k, _ in FIELDS])
+                detail.append([cycle.get('cycle', i), ts, onu] + [item.get(k) for k, _ in FIELDS])
             else:
-                row.extend(('NOT VERIFIED' if k == 'status' else
+                row.extend(('UNKNOWN' if k == 'status' else
                             'MISSING THIS CYCLE' if k == 'data_flag' else None)
                            for k, _ in FIELDS)
         summary.append(row)
+    event_rows = [['Cycle','Check Time','ONU ID','GPON SN','Previous Phase','Current Phase','Event']]
+    previous = {}
+    for i, cycle in enumerate(cycles, 1):
+        for onu, item in sorted(cycle['onus'].items()):
+            current = item.get('phase_state')
+            if not current:
+                continue
+            before = previous.get(onu)
+            if before is None:
+                if current.lower() != 'working':
+                    event_rows.append([cycle.get('cycle',i),cycle['time'],onu,item.get('gpon_sn'),
+                                       'NOT OBSERVED',current,'INITIAL ABNORMAL'])
+            elif before != current:
+                event_rows.append([cycle.get('cycle',i),cycle['time'],onu,item.get('gpon_sn'),
+                                   before,current,'RECOVERY' if current.lower()=='working' else 'STATE CHANGE'])
+            previous[onu]=current
     notes = [['Field', 'Explanation'],
              ['ONU columns', 'Automatically based on all actual ONU IDs; no 10/16 ONU hard limit'],
              ['Missing This Cycle', 'ONU ID not returned this cycle; NOT equivalent to Offline'],
-             ['Status', 'NOT VERIFIED: timestamp and optical fields do not prove Online/Offline'],
-             ['Data Flag', 'OK if two commands match, otherwise MISSING_TIMESTAMP / MISSING_OPTICAL'],
+             ['Status', 'PASS if Phase State working; FAIL for other observed states; UNKNOWN for missing state'],
+             ['Data Flag', 'OK if state, timestamp and optical all have ONU row; missing fields remain visible'],
              ['N/A', 'Device returned N/A; do not interpret as PASS'],
              ['Units', 'Rx/Tx are raw CLI values; confirm dBm with product specification'],
-             ['Source', 'show onu time-stamp + show onu optical-info all']]
-    return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_Field_Notes', notes)]
+             ['Source', 'show onu state + show onu time-stamp + show onu optical-info all']]
+    return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_Field_Notes', notes), ('04_Event_Log', event_rows)]
 
 def export_cycles(path: Path, cycles: list[dict]):
     path=Path(path)

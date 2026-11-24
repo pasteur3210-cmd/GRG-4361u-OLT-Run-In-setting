@@ -134,3 +134,70 @@ def merge_data(timestamp: dict[int, dict], optical: dict[int, dict]) -> dict[int
                              'MISSING_TIMESTAMP' if onu not in timestamp else 'MISSING_OPTICAL')
         merged[onu] = item
     return merged
+
+STATE_ROW = re.compile(
+    r'^\s*(?P<pon>\d+)\s*:\s*(?P<id>\d+)\s+'
+    r'(?P<admin>\S+)\s+(?P<omcc>\S+)\s+(?P<phase>\S+)\s+'
+    r'(?P<channel>\S+)\s+(?P<serial>\S+)\s*$', re.I)
+
+
+def parse_onu_state(output: str) -> dict[int, dict]:
+    """Parse latest complete `show onu state` table, including repeated queries.
+
+    Never interpret an unsolicited 'ONU Online' event as a row. CLI text may
+    contain ANSI positioning; use the same terminal normalization as timestamps.
+    """
+    text = normalize_terminal_output(output.replace('\x00', ''))
+    tables: list[list[str]] = []
+    current: list[str] | None = None
+    for line in text.splitlines():
+        if re.search(r'\bOnuIndex\b.*\bPhase\s+State\b.*\bSerial\s+Number\b', line, re.I):
+            if current is not None:
+                tables.append(current)
+            current = []
+        elif current is not None:
+            if re.search(r'gpon-olt\(', line, re.I) or re.match(r'^\s*total\s*:', line, re.I):
+                tables.append(current)
+                current = None
+            else:
+                current.append(line)
+    if current is not None:
+        tables.append(current)
+    if not tables:
+        raise ValueError('No ONU state table header in show onu state output')
+    parsed = {}
+    for line in tables[-1]:
+        m = STATE_ROW.match(line)
+        if not m:
+            continue
+        d = m.groupdict()
+        onu = int(d['id'])
+        if onu in parsed:
+            raise ValueError(f'Duplicate ONU ID in state: {onu}')
+        phase = d['phase'].lower()
+        result = 'PASS' if phase == 'working' else 'FAIL'
+        parsed[onu] = {
+            'onu_id': onu, 'pon_index': d['pon'], 'gpon_sn': d['serial'],
+            'admin_state': d['admin'], 'omcc_state': d['omcc'],
+            'phase_state': d['phase'], 'channel': d['channel'],
+            'status': result,
+        }
+    if not parsed:
+        raise ValueError('No valid ONU rows in show onu state output')
+    return parsed
+
+
+def merge_state_data(state: dict[int, dict], timestamp: dict[int, dict],
+                     optical: dict[int, dict]) -> dict[int, dict]:
+    ids = sorted(set(state) | set(timestamp) | set(optical))
+    result = {}
+    for onu in ids:
+        item = {'onu_id': onu, 'status': 'UNKNOWN'}
+        item.update(timestamp.get(onu, {}))
+        item.update(optical.get(onu, {}))
+        item.update(state.get(onu, {}))
+        missing = [name for name, source in [('STATE', state), ('TIMESTAMP', timestamp),
+                                              ('OPTICAL', optical)] if onu not in source]
+        item['data_flag'] = 'OK' if not missing else 'MISSING_' + '_'.join(missing)
+        result[onu] = item
+    return result

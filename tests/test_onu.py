@@ -9,7 +9,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 # importing test_basic installs serial double if pyserial unavailable
 import test_basic
 import main
-from onu_parser import parse_time_stamp,parse_optical,merge_data
+from onu_parser import parse_time_stamp,parse_optical,merge_data,parse_onu_state,merge_state_data
 from excel_record import export_cycles, build_rows
 
 DATA=Path(__file__).resolve().parents[1]/'tests'/'fixtures'
@@ -56,7 +56,7 @@ class ONUDataTests(unittest.TestCase):
         ons={i:{'status':'NOT VERIFIED','data_flag':'OK','rx':-25-i/100} for i in range(1,17)}
         sheets=build_rows([{'time':'2026-11-24 13:00:00','onus':ons}])
         hdr=sheets[0][1][0]; row=sheets[0][1][1]
-        self.assertEqual(len(hdr),4+16*14)
+        self.assertEqual(len(hdr),len(__import__('excel_record').BASE_HEADERS)+16*len(__import__('excel_record').FIELDS))
         self.assertEqual(row[3],16)
         self.assertIn('ONU16_ONU Rx',hdr)
         self.assertNotIn('ONU17_ONU Rx',hdr)
@@ -64,9 +64,9 @@ class ONUDataTests(unittest.TestCase):
     def test_dynamic_twenty_nonconsecutive_ids(self):
         ons={i:{'status':'NOT VERIFIED','data_flag':'OK','rx':-i} for i in range(1,21)}
         sheets=build_rows([{'time':'t','onus':ons}])
-        self.assertEqual(len(sheets[0][1][0]),4+20*14)
+        self.assertEqual(len(sheets[0][1][0]),len(__import__('excel_record').BASE_HEADERS)+20*len(__import__('excel_record').FIELDS))
         sparse=build_rows([{'time':'t','onus':{1:ons[1],3:ons[3],16:ons[16]}}])
-        self.assertEqual(len(sparse[0][1][0]),4+3*14)
+        self.assertEqual(len(sparse[0][1][0]),len(__import__('excel_record').BASE_HEADERS)+3*len(__import__('excel_record').FIELDS))
         self.assertIn('ONU16_ONU Rx',sparse[0][1][0])
         self.assertNotIn('ONU2_ONU Rx',sparse[0][1][0])
     def test_missing_onu_stays_at_own_column(self):
@@ -77,7 +77,7 @@ class ONUDataTests(unittest.TestCase):
         self.assertEqual(rows[2][headers.index('ONU2_Data Flag')],'MISSING THIS CYCLE')
         self.assertIsNone(rows[2][headers.index('ONU2_ONU Rx')])
         self.assertEqual(rows[2][headers.index('ONU16_ONU Rx')],-27)
-        self.assertEqual(rows[2][2],'DATA INCOMPLETE')
+        self.assertEqual(rows[2][2],'INCOMPLETE')
     def test_sixteen_ids_parse_timestamp_and_optical(self):
         t='\n'.join(f'1/{i}2026:11:23 16:47:05N/AN/A20:52:29' for i in range(1,17))
         o='\n\n'.join(f'ONU ID : {i}\nRx optical level(ONU) : -25.00\nTx optical level : 6.97' for i in range(1,17))
@@ -96,14 +96,16 @@ class ONUDataTests(unittest.TestCase):
                 ET.fromstring(text)
                 self.assertIn(b'ONU16_ONU Rx',text)
     def test_run_check_commands(self):
+        state=(DATA/'show onu state.txt').read_text()
         tm=(DATA/'show onu time-stamp.log').read_text()
         op=(DATA/'teraterm-show onu optical info all.log').read_text()
-        fake=FakeCLISerial([b'Login:',b'Password:',b'gpon-olt>',b'Password:',b'gpon-olt#',b'gpon-olt(config)#',b'gpon-olt(config-pon-0/1)#',tm.encode(),op.encode()])
+        fake=FakeCLISerial([b'Login:',b'Password:',b'gpon-olt>',b'Password:',b'gpon-olt#',b'gpon-olt(config)#',b'gpon-olt(config-pon-0/1)#',state.encode(),tm.encode(),op.encode()])
         with tempfile.TemporaryDirectory() as td:
             client=main.SerialLogin('COM3',logging.getLogger('test-onu'),serial_factory=lambda **kw:fake)
             result, data=client.run(check=True,output_folder=td)
             self.assertEqual(len(data),2)
             self.assertEqual(result,main.TARGET_PROMPT)
+            self.assertIn(b'show onu state\r',fake.writes)
             self.assertIn(b'show onu time-stamp\r',fake.writes)
             self.assertIn(b'show onu optical-info all\r',fake.writes)
             self.assertTrue((Path(td)/'onu_time_stamp.log').exists())

@@ -14,11 +14,12 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 import serial
-from onu_parser import parse_time_stamp, parse_optical, merge_data
+from onu_parser import parse_time_stamp, parse_optical, merge_state_data, parse_onu_state
 from excel_record import export_cycles
+from session_runner import run_session, rebuild_excel
 from serial.tools import list_ports
 
-VERSION = "1.0.11"
+VERSION = "1.0.12"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -121,6 +122,9 @@ class SerialLogin:
             if output_folder is None:
                 raise ValueError('output_folder is required for check')
             folder = Path(output_folder)
+            self.stage('QUERY_ONU_STATE')
+            state_raw = self.command('show onu state', timeout=25)
+            (folder/'onu_state.log').write_text(state_raw, encoding='utf-8')
             self.stage('QUERY_ONU_TIMESTAMP')
             timestamp_raw = self.command('show onu time-stamp', timeout=25)
             (folder/'onu_time_stamp.log').write_text(timestamp_raw, encoding='utf-8')
@@ -129,8 +133,9 @@ class SerialLogin:
             (folder/'onu_optical_info.log').write_text(optical_raw, encoding='utf-8')
             timestamp=parse_time_stamp(timestamp_raw)
             optical=parse_optical(optical_raw)
-            merged=merge_data(timestamp,optical)
-            self.log.info('PARSE|TIMESTAMP=%s|OPTICAL=%s|MERGED=%s',len(timestamp),len(optical),len(merged))
+            state=parse_onu_state(state_raw)
+            merged=merge_state_data(state,timestamp,optical)
+            self.log.info('PARSE|STATE=%s|TIMESTAMP=%s|OPTICAL=%s|MERGED=%s',len(state),len(timestamp),len(optical),len(merged))
             return result,merged
         finally:
             self.close()
@@ -221,99 +226,132 @@ def make_logger(folder):
 
 
 class GUI:
-    def __init__(self,root):
-        self.root=root
-        self.root.title('V3600GS Connect V'+VERSION+' — ONU Check')
-        self.root.geometry('860x490')
-        self.messages=queue.Queue()
-        self.stop_flag=threading.Event()
-        self.running=False
-        self.port_var=tk.StringVar()
-        self.state=tk.StringVar(value='READY TO CONNECT (Tera Term must be closed)')
-        frm=ttk.Frame(root,padding=18)
+    def __init__(self, root):
+        self.root = root
+        root.title('V3600GS Connect V'+VERSION+' — ONU Run-in')
+        root.geometry('970x640')
+        self.messages = queue.Queue()
+        self.stop_flag = threading.Event()
+        self.running = False
+        self.port_var = tk.StringVar()
+        self.mode = tk.StringVar(value='single')
+        self.interval_var = tk.StringVar(value='5')
+        self.duration_var = tk.StringVar(value='72')
+        self.state = tk.StringVar(value='READY — select COM and run')
+        self.cycle_state = tk.StringVar(value='Completed cycles: 0')
+        self.last_excel = None
+        frm=ttk.Frame(root,padding=16)
         frm.pack(fill='both',expand=True)
-        ttk.Label(frm,text='V3600GS Direct Serial (without Tera Term Macro)',font=('Segoe UI',13,'bold')).pack(anchor='w')
-        ttk.Label(frm,text='COM Port — USB-Enhanced-SERIAL preferred').pack(anchor='w',pady=(18,2))
+        ttk.Label(frm,text='V3600GS ONU Run-in — Direct Serial',font=('Segoe UI',14,'bold')).pack(anchor='w')
+        ttk.Label(frm,text='COM Port — USB-Enhanced-SERIAL preferred').pack(anchor='w',pady=(12,2))
         row=ttk.Frame(frm);row.pack(fill='x')
         self.combo=ttk.Combobox(row,textvariable=self.port_var,state='readonly',width=75)
         self.combo.pack(side='left',fill='x',expand=True)
-        ttk.Button(row,text='Refresh COM',command=self.refresh).pack(side='left',padx=8)
-        ttk.Label(frm,text='Fixed: 115200 baud | 8 data bits | no parity | 1 stop bit | no flow control').pack(anchor='w',pady=(14,3))
-        ttk.Label(frm,text='Login qa123 → enable → config terminal → interface gpon 0/1').pack(anchor='w')
-        actions=ttk.Frame(frm);actions.pack(fill='x',pady=18)
-        self.connect=ttk.Button(actions,text='Connect & Auto Login',command=self.start)
-        self.connect.pack(side='left')
-        self.check_btn=ttk.Button(actions,text='Login + ONU Check Once (Excel)',command=lambda:self.start(check=True))
-        self.check_btn.pack(side='left',padx=10)
-        ttk.Button(actions,text='Stop',command=self.stop).pack(side='left',padx=10)
-        ttk.Button(actions,text='Open Records Folder',command=self.open_records).pack(side='right')
-        ttk.Label(frm,textvariable=self.state,foreground='#005ea8').pack(anchor='w')
-        self.out=tk.Text(frm,height=8,wrap='word',state='disabled')
+        self.refresh_button=ttk.Button(row,text='Refresh COM',command=self.refresh)
+        self.refresh_button.pack(side='left',padx=8)
+        ttk.Label(frm,text='Serial: 115200 / 8N1 | Login → Enable → Config → GPON 0/1').pack(anchor='w',pady=(10,4))
+        settings=ttk.LabelFrame(frm,text='Test Settings',padding=9)
+        settings.pack(fill='x',pady=(4,8))
+        modes=ttk.Frame(settings);modes.pack(fill='x')
+        ttk.Radiobutton(modes,text='Single Check',value='single',variable=self.mode,command=self.update_mode).pack(side='left',padx=(0,16))
+        ttk.Radiobutton(modes,text='Loop Check',value='loop',variable=self.mode,command=self.update_mode).pack(side='left')
+        nums=ttk.Frame(settings); nums.pack(fill='x',pady=(8,0))
+        ttk.Label(nums,text='Check Interval (minutes):').pack(side='left')
+        self.interval_input=ttk.Entry(nums,textvariable=self.interval_var,width=9)
+        self.interval_input.pack(side='left',padx=(5,24))
+        ttk.Label(nums,text='Duration (hours, 0 = until Stop):').pack(side='left')
+        self.duration_input=ttk.Entry(nums,textvariable=self.duration_var,width=9)
+        self.duration_input.pack(side='left',padx=(5,0))
+        buttons=ttk.Frame(frm);buttons.pack(fill='x',pady=(8,9))
+        self.start_btn=ttk.Button(buttons,text='Start ONU Check',command=self.start)
+        self.start_btn.pack(side='left')
+        self.stop_btn=ttk.Button(buttons,text='Stop',command=self.stop,state='disabled')
+        self.stop_btn.pack(side='left',padx=10)
+        ttk.Button(buttons,text='Open Records Folder',command=self.open_records).pack(side='right')
+        self.excel_btn=ttk.Button(buttons,text='Open Excel',command=self.open_excel,state='disabled')
+        self.excel_btn.pack(side='right',padx=10)
+        ttk.Label(frm,textvariable=self.state,foreground='#005ea8',font=('Segoe UI',10,'bold')).pack(anchor='w')
+        ttk.Label(frm,textvariable=self.cycle_state).pack(anchor='w',pady=(3,0))
+        self.out=tk.Text(frm,height=12,wrap='word',state='disabled')
         self.out.pack(fill='both',expand=True,pady=(8,0))
         self.refresh()
+        self.update_mode()
         root.after(100,self.poll)
 
     def display(self,message):
         self.out.configure(state='normal')
-        self.out.insert('end',message+'\n')
+        self.out.insert('end',str(message)+'\n')
         self.out.see('end')
         self.out.configure(state='disabled')
-        self.state.set(message)
 
     def refresh(self):
         ports=available_ports()
         self.options={f'{dev} — {desc}':dev for dev,desc,_ in ports}
         self.combo['values']=list(self.options)
         preferred=select_default(ports)
-        key=next((k for k,v in self.options.items() if v==preferred), '')
+        key=next((k for k,v in self.options.items() if v==preferred),'')
         self.port_var.set(key)
-        self.display(('Auto-selected '+preferred) if preferred else 'Select a COM port; no unique USB-Enhanced-SERIAL detected')
+        self.display(('Auto-selected '+preferred) if preferred else 'Choose COM Port')
 
-    def start(self,check=False):
+    def update_mode(self):
+        state='normal' if self.mode.get()=='loop' and not self.running else 'disabled'
+        self.interval_input.configure(state=state)
+        self.duration_input.configure(state=state)
+
+    def start(self):
         if self.running:return
         port=self.options.get(self.port_var.get(),'')
         if not valid_port(port):
             messagebox.showerror('COM Port','Choose a valid COM port first');return
+        loop=self.mode.get()=='loop'
         try:
-            RECORD_ROOT.mkdir(parents=True,exist_ok=True)
-            folder=RECORD_ROOT/dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+            interval=float(self.interval_var.get()) if loop else 5.0
+            duration=float(self.duration_var.get()) if loop else 0.0
+            if not (0<interval<=1440 and 0<=duration<=8760):raise ValueError()
+        except ValueError:
+            messagebox.showerror('Test Settings','Interval: >0 to 1440 min; Duration: 0 to 8760 hours')
+            return
+        try:
+            folder=RECORD_ROOT/('Run_'+dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
             logger=make_logger(folder)
         except OSError as exc:
-            messagebox.showerror('Records folder',f'Cannot create records beside EXE: {exc}')
-            return
+            messagebox.showerror('Record',f'Cannot create folder beside EXE: {exc}');return
         self.running=True
-        self.connect.configure(state='disabled')
-        self.check_btn.configure(state='disabled')
         self.stop_flag.clear()
-        self.display(('Checking ONUs via ' if check else 'Connecting ')+port+' (close Tera Term first)...')
-        logger.info('START|VERSION=%s|PORT=%s',VERSION,port)
+        self.start_btn.configure(state='disabled')
+        self.stop_btn.configure(state='normal')
+        self.combo.configure(state='disabled')
+        self.refresh_button.configure(state='disabled')
+        self.excel_btn.configure(state='disabled')
+        self.last_excel=None
+        self.update_mode()
+        self.cycle_state.set('Completed cycles: 0')
+        self.state.set('RUNNING — '+('Loop Check' if loop else 'Single Check'))
+        self.display('START | '+port+' | records: '+str(folder))
+        logger.info('START|VERSION=%s|PORT=%s|MODE=%s|INTERVAL_MIN=%s|DURATION_HR=%s',
+                    VERSION,port,'LOOP' if loop else 'SINGLE',interval,duration)
         def worker():
+            def notify(kind,msg):self.messages.put((kind,msg))
             try:
-                client=SerialLogin(port,logger,self.stop_flag,on_stage=lambda stage:self.messages.put(('stage',stage)))
-                returned=client.run(check=check,output_folder=folder)
-                if check:
-                    result, units=returned
-                    cycle={'time':dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'onus':units}
-                    outfile=export_cycles(folder/'ONU_Check_Record.xlsx',[cycle])
-                    logger.info('EXCEL_CREATED|%s|ONU_COUNT=%d',outfile,len(units))
-                    self.messages.put(('stage',f'EXCEL SAVED | {outfile} | ONU count={len(units)}'))
-                else:
-                    result=returned
-                logger.info('RESULT|PASS|%s',result)
-                (folder/'status.txt').write_text('PASS|'+result+'\n',encoding='utf-8')
-                self.messages.put(('done',('ONU CHECK COMPLETED | ' if check else 'LOGIN READY | ')+result))
+                factory=lambda: SerialLogin(port,logger,self.stop_flag,
+                                              on_stage=lambda stage:self.messages.put(('stage',stage)))
+                run_session(factory,folder,logger,self.stop_flag,loop=loop,
+                            interval_min=interval,duration_hr=duration,notify=notify)
             except Exception as exc:
-                logger.exception('RESULT|FAIL|%s',type(exc).__name__)
-                (folder/'status.txt').write_text('FAIL|'+type(exc).__name__+'|'+str(exc)+'\n',encoding='utf-8')
-                self.messages.put(('done','FAIL | '+str(exc)))
+                logger.exception('SESSION_ERROR')
+                self.messages.put(('DONE',{'status':'ERROR: '+str(exc),'cycles':0,
+                                           'folder':str(folder),'last_result':None}))
             finally:
                 for handler in list(logger.handlers):
                     handler.close();logger.removeHandler(handler)
         threading.Thread(target=worker,daemon=True).start()
 
     def stop(self):
+        if not self.running:return
         self.stop_flag.set()
-        self.display('STOP requested')
+        self.state.set('STOP REQUESTED — finishing current save')
+        self.stop_btn.configure(state='disabled')
+        self.display('User requested Stop; recorded cycles will be retained')
 
     def open_records(self):
         try:
@@ -323,16 +361,44 @@ class GUI:
             else:messagebox.showinfo('Records folder',str(RECORD_ROOT))
         except Exception as exc:messagebox.showerror('Records folder',str(exc))
 
+    def open_excel(self):
+        try:
+            if not self.last_excel or not self.last_excel.exists():
+                raise FileNotFoundError('No completed Excel record')
+            import os
+            if sys.platform=='win32':os.startfile(str(self.last_excel))
+            else:messagebox.showinfo('Excel file',str(self.last_excel))
+        except Exception as exc:messagebox.showerror('Open Excel',str(exc))
+
     def poll(self):
         try:
             while True:
-                typ,msg=self.messages.get_nowait()
-                if typ=='stage':self.display(msg)
-                else:
-                    self.running=False
-                    self.connect.configure(state='normal')
-                    self.check_btn.configure(state='normal')
+                kind,msg=self.messages.get_nowait()
+                if kind=='stage':
                     self.display(msg)
+                elif kind=='CHECKING':
+                    self.state.set(str(msg))
+                    self.display(msg)
+                elif kind=='CYCLE':
+                    self.display(msg)
+                    m=re.match(r'Cycle (\d+)',str(msg))
+                    if m:self.cycle_state.set('Completed cycles: '+m.group(1))
+                    self.state.set(str(msg))
+                elif kind=='SAVE ERROR':
+                    self.state.set('SAVE ERROR — see execution.log')
+                    self.display(msg)
+                elif kind=='DONE':
+                    self.running=False
+                    self.start_btn.configure(state='normal')
+                    self.stop_btn.configure(state='disabled')
+                    self.combo.configure(state='readonly')
+                    self.refresh_button.configure(state='normal')
+                    self.update_mode()
+                    self.last_excel=Path(msg['folder'])/'ONU_Master_Record.xlsx'
+                    if self.last_excel.is_file():self.excel_btn.configure(state='normal')
+                    state=msg['status']
+                    self.state.set(f'{state} — {msg["cycles"]} cycles; last result: {msg["last_result"]}')
+                    self.display(self.state.get())
         except queue.Empty:pass
         self.root.after(100,self.poll)
 
@@ -342,4 +408,5 @@ def main():
     GUI(root)
     root.mainloop()
 
-if __name__=='__main__':main()
+if __name__ == '__main__':
+    main()

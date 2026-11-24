@@ -1,0 +1,12 @@
+gpon-olt(config-pon-0/1)# show onu state
+OnuIndex    Admin State    OMCC State    Phase State    Channel      Serial Number
+----------------------------------------------------------------------------------
+1:1         enable         enable        working        XGSPON       CMTDc0112255
+1:2         enable         disable       offline        unknown      CMTD99abe129
+
+gpon-olt(config-pon-0/1)# show onu state
+OnuIndex    Admin State    OMCC State    Phase State    Channel      Serial Number
+----------------------------------------------------------------------------------
+1:1         enable         enable        working        XGSPON       CMTDc0112255
+1:2         enable         enable        working        XGSPON       CMTD99abe129
+gpon-olt(config-pon-0/1)#

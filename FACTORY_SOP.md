@@ -1,19 +1,10 @@
-# FACTORY SOP — V3600GS Connect V1.0.15
-
-1. Close Tera Term. Connect OLT console cable and local DUT LAN to the test PC.
-2. Run EXE (no local Python needed). Select detected `USB-Enhanced-SERIAL` COM port; serial is 115200 / 8N1.
-3. Paste IPv4 addresses **one per line**; verify no duplicates.
-4. Click `Verify IP / MAC / GPON SN Mapping` and wait for table results. Check all IP, MAC, ONU ID, GPON SN, and MATCH status. A MAC/IP missing or suffix mismatching must be resolved before running; do not guess mapping.
-5. Configure Single or Loop, Interval and Duration (`0` = until Stop), then click `Start ONU Check`.
-6. Each complete cycle records three ONU commands and four Windows Ping packets per DUT. 0 lost PASS; 1 WARNING; 2+ FAIL.
-7. A session writes to `records/Run_<timestamp>/ONU_Master_Record.xlsx` cumulatively, with `cycles.jsonl` journal, `mapping.json`, `raw_cli/` and `raw_ping/`.
-8. Do not keep the Excel workbook open while testing. Use `Stop` to finish and retain completed cycles. New runs require fresh mapping verification.
-9. If an error occurs, provide the entire `records/Mapping_...` or `Run_...` folder and GUI screenshot to engineering.
-
-**Engineering warning:** A successful Ping/IP pairing depends on the Windows ARP MAC representing the actual DUT interface. These are DUT-side network checks, not proof of ONU optical compliance.
-
-## V1.0.15 Mapping check
-- Before starting, enter the actual IPs and select Verify Mapping.
-- GUI shows observed **ARP MAC**, verified **LAN MAC**, **Match Type** (DIRECT or OFFSET_MINUS_1), ONU ID and GPON SN.
-- Real example: 192.168.2.121 WAN 3872C0112256 -> LAN 3872C0112255 -> ONU 1; 192.168.2.122 WAN 1C6499ABE12A -> LAN 1C6499ABE129 -> ONU 2.
-- Mapping FAIL blocks Start; check IP/MAC/L2 topology. No manual force-PASS.
+# Factory SOP — V3600GS Connect V1.0.16
+1. Connect V3600GS Console USB and verify `USB-Enhanced-SERIAL` COM, close Tera Term.
+2. Set PC local timezone; plug into AC power. Set Windows 11 Power & battery > Screen, sleep & hibernate to keep system awake during the run, disable scheduled automatic restart, and verify USB/Network stability.
+3. Launch EXE, enter DUT IPs on same L2 network; click Verify Mapping. Only proceed on unique MATCH rows.
+4. Perform Single Check and verify ONU IDs, GPON SN, Phase State, Ping Loss and Alive Time including days (e.g. `1 00:04:03`).
+5. Set Loop Interval and Duration (0 = until Stop), start run. Close any open `ONU_Master_Record.xlsx` so the running EXE can replace it.
+6. Verify after 2–3 cycles that one `Run_.../ONU_Master_Record.xlsx` has cumulative rows and `cycles.jsonl` is growing.
+7. For night run, keep OLT and test PC powered; monitor externally for unexpected reboot or disconnect.
+8. Stop in morning; ensure `status.txt`, `cycles.jsonl`, Excel, raw_cli/raw_ping are present. Check cycle count, elapsed test time, failed cycles, missing loops and any save errors.
+9. If Excel is damaged/locked, preserve all `cycles.jsonl` and raw logs; do not delete run folder. Rebuild with the provided `rebuild_excel.py` in the development environment.

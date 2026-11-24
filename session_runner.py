@@ -144,7 +144,10 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             if stop_event.is_set():status='STOPPED BY USER';break
             if cutoff is not None and clock.monotonic()>=cutoff and cycles:break
             number=len(cycles)+1
-            check_time=dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            local_now=dt.datetime.now().astimezone()
+            check_time=local_now.strftime('%Y-%m-%d %H:%M:%S')
+            time_zone=local_now.strftime('%z')
+            time_zone=time_zone[:3]+':'+time_zone[3:]
             notify('CHECKING',f'Cycle {number} checking ONU...')
             units={};err='';ping_results={}
             # Start Ping in parallel with Serial ONU CLI; only one Serial caller.
@@ -181,12 +184,13 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                 finally:
                     ping_pool.shutdown(wait=True)
             if stop_event.is_set():
+                # Preserve the fully collected cycle even if Stop was pressed
+                # during CLI/Ping processing. The next iteration will exit.
                 status='STOPPED BY USER'
-                logger.info('STOP_REQUESTED_DURING_CYCLE|%s',number)
-                break
+                logger.info('STOP_REQUESTED_DURING_CYCLE|%s|SAVE_COMPLETED_CYCLE',number)
             roster.update(units)
             result=cycle_result(units,err,roster,ping_results if mapping else None,mapping)
-            cycle={'cycle':number,'time':check_time,'onus':units,'error':err,'result':result,
+            cycle={'cycle':number,'time':check_time,'time_zone':time_zone,'onus':units,'error':err,'result':result,
                    'ping':ping_results}
             # Journal is written before the spreadsheet to prevent data loss.
             append_journal(folder,cycle)

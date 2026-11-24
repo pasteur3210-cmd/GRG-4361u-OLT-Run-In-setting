@@ -8,7 +8,7 @@ TIME_ROW = re.compile(
     r'(?P<reg>\d{4}:\d{2}:\d{2}\s+\d{2}:\d{2}:\d{2}|N/A)\s*'
     r'(?P<dereg>\d{4}:\d{2}:\d{2}\s+\d{2}:\d{2}:\d{2}|N/A)\s*'
     r'(?P<reason>.*?)\s*'
-    r'(?P<alive>\d+:\d{2}:\d{2}|N/A)\s*$', re.I)
+    r'(?P<alive>(?:\d+\s+)?\d{2}:\d{2}:\d{2}|N/A)\s*$', re.I)
 
 FIELDS = {
     'Alarm': ('alarm', str),

@@ -20,7 +20,7 @@ from session_runner import run_session, rebuild_excel
 from ping_mapping import normalize_ips, verify_mapping
 from serial.tools import list_ports
 
-VERSION = "1.0.15"
+VERSION = "1.0.16"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200

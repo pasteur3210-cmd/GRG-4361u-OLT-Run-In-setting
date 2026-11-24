@@ -171,7 +171,13 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
              ['Units', 'Rx/Tx are raw CLI values; confirm dBm with product specification'],
              ['Mapping rule', 'ARP MAC may equal LAN MAC (DIRECT), or LAN MAC + 1 (OFFSET_MINUS_1); match last 6 hex with GPON SN, unique only'],
              ['Source', 'show onu state + show onu time-stamp + show onu optical-info all']]
-    return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_IP_Mapping', mapping_rows), ('04_Event_Log', event_rows), ('05_Field_Notes', notes)]
+    time_zone = cycles[0].get('time_zone', 'NOT RECORDED') if cycles else 'NOT RECORDED'
+    timezone_rows = [['Field', 'Value'],
+                     ['Check Time format', 'YYYY-MM-DD HH:MM:SS (local PC time)'],
+                     ['UTC Offset at first cycle', time_zone],
+                     ['Timezone guidance', 'Check PC timezone before Night Run; offsets are recorded per cycle in cycles.jsonl'],
+                     ['Session cycles', len(cycles)]]
+    return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_IP_Mapping', mapping_rows), ('04_Event_Log', event_rows), ('05_Field_Notes', notes), ('06_Run_Metadata', timezone_rows)]
 
 def export_cycles(path: Path, cycles: list[dict], mapping=None):
     path=Path(path)

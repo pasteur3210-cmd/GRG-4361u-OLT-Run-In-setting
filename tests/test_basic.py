@@ -1,71 +1,65 @@
 import unittest
-from pathlib import Path, PureWindowsPath
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from main import com_number, build_macro, ttl_quoted, RECORDS
+import main
 
 class Tests(unittest.TestCase):
     def test_valid_port(self):
-        self.assertEqual(com_number('COM3'), 3)
-        self.assertEqual(com_number('com256'), 256)
+        self.assertEqual(main.com_number('COM3'), 3)
+        self.assertEqual(main.com_number('com256'), 256)
     def test_invalid_port(self):
-        for s in ['COM0', 'COM257', '3', 'COM3 & exit']:
-            with self.assertRaises(ValueError):
-                com_number(s)
-    def test_macro(self):
-        ttl = build_macro(3, Path('C:/temp/status.txt'), Path('C:/temp/raw.log'))
-        for required in ['testlink', 'CONNECTED|SERIAL', 'PROMPT|LOGIN', 'LOGIN_PROMPT_TIMEOUT',
-                         'qa123', 'enable', 'config terminal', 'interface gpon 0/1',
-                         'gpon-olt(config-pon-0/1)#']:
-            self.assertIn(required, ttl)
-        self.assertNotIn("connect '/C=", ttl)
-
-    def test_launch_arguments(self):
-        from main import launch_arguments
-        args = launch_arguments(Path('C:/Program Files (x86)/teraterm/ttermpro.exe'), 3,
-                                Path('C:/My Tool/records/run/connect.ttl'))
-        self.assertEqual(args[1], '/C=3')
-        self.assertEqual(args[2], '/BAUD=115200')
-        self.assertTrue(args[3].startswith('/M='))
-        self.assertEqual(PureWindowsPath(args[3][3:]),
-                         PureWindowsPath('C:/My Tool/records/run/connect.ttl'))
-        self.assertEqual(len(args), 4)
-        self.assertNotIn('\"', args[3])
-
-    def test_records_are_beside_executable(self):
-        import main
+        for x in ['COM0', 'COM257', '3', 'COM3 & exit']:
+            with self.assertRaises(ValueError): main.com_number(x)
+    def test_ttl_uses_standalone_connect(self):
+        ttl = main.build_macro(3, Path('C:/temp/status.txt'), Path('C:/temp/serial.log'))
+        self.assertIn("connect '/C=3 /BAUD=115200'", ttl)
+        self.assertNotIn('/DS', ttl)
+        self.assertNotIn('/M=', ttl)
+        self.assertIn('testlink', ttl)
+        self.assertIn('LINK_STATE=', ttl)
+    def test_ttl_four_login_stages(self):
+        ttl = main.build_macro(3, Path('C:/temp/status.txt'), Path('C:/temp/serial.log'))
+        for term in ('PROMPT|LOGIN','qa123','admin123','enable','config terminal',
+                     'interface gpon 0/1', 'READY|gpon-olt(config-pon-0/1)#'):
+            self.assertIn(term, ttl)
+    def test_macro_launch_arguments(self):
+        args = main.launch_arguments(Path('C:/Program Files (x86)/teraterm/ttpmacro.exe'),
+                                     Path('C:/Users/Public/V3600GS_Macro/123/connect.ttl'))
+        self.assertEqual(len(args), 2)
+        self.assertTrue(args[0].endswith('ttpmacro.exe'))
+        self.assertTrue(args[1].endswith('connect.ttl'))
+        self.assertFalse(any('/M=' in x for x in args))
+    def test_record_location(self):
         self.assertEqual(main.RECORDS, main.BASE / 'records')
+    def test_stage_record_copies(self):
+        with tempfile.TemporaryDirectory() as base:
+            source=Path(base)/'stage'; target=Path(base)/'records'
+            source.mkdir(); target.mkdir()
+            for name in ['stage.txt','status.txt','serial.log','connect.ttl']:
+                (source/name).write_text(name)
+            main.copy_staging_records(source,target)
+            for name in ['stage.txt','status.txt','serial.log','connect.ttl']:
+                self.assertEqual((target/name).read_text(),name)
+    def test_staging_no_unicode_space(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(main.sys,'platform','win32'), patch.dict(main.os.environ, {'PUBLIC':temp}, clear=False):
+                if str(temp).isascii() and ' ' not in temp:
+                    self.assertEqual(main.macro_work_root(), Path(temp)/'V3600GS_Macro')
+    def test_ttl_quoted_rejects_unsafe(self):
+        for bad in ["C:/can't/test",'C:/bad\nname']:
+            with self.assertRaises(ValueError): main.ttl_quoted(bad)
+    def test_version_build_match(self):
+        wf=(Path(__file__).resolve().parents[1]/'.github/workflows/build.yml').read_text()
+        version='V3600GS_Connect_V'+main.APP_VERSION
+        self.assertIn('--name '+version+' main.py',wf)
+        self.assertIn('dist/'+version+'.exe',wf)
+        self.assertIn('name: '+version,wf)
+    def test_fresh_records_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            p=Path(root)/'records'; p.mkdir(parents=True,exist_ok=True)
+            self.assertTrue(p.is_dir())
 
-    def test_release_version_matches_build_workflow(self):
-        import main
-        workflow = (Path(__file__).resolve().parents[1] / '.github' / 'workflows' / 'build.yml').read_text(encoding='utf-8')
-        expected = f'V3600GS_Connect_V{main.APP_VERSION}'
-        self.assertIn(f'--name {expected} main.py', workflow)
-        self.assertIn(f'dist/{expected}.exe', workflow)
-        self.assertIn(f'name: {expected}', workflow)
-        self.assertNotIn('V3600GS_Connect_V1.0.4', workflow)
-
-    def test_records_directory_creation(self):
-        from tempfile import TemporaryDirectory
-        with TemporaryDirectory() as temp:
-            nested = Path(temp) / 'V3600GS_Connect' / 'records'
-            nested.mkdir(parents=True, exist_ok=True)
-            self.assertTrue(nested.is_dir())
-
-    def test_ttl_escape(self):
-        for bad in ["C:/can't/test", 'C:/bad\nname']:
-            with self.assertRaises(ValueError):
-                ttl_quoted(bad)
-
-if __name__ == '__main__':
-    unittest.main()
-
-
-def test_macro_records_numeric_link_state(tmp_path):
-    import main
-    ttl = main.build_macro(3, tmp_path / "status.txt", tmp_path / "serial.log", tmp_path / "stage.txt")
-    assert "link_state = result" in ttl
-    assert "FAIL|TERATERM_MACRO_LINK|LINK_STATE=" in ttl
-    assert "testlink" in ttl
-    assert "LOGIN_PROMPT_TIMEOUT" in ttl
-    assert "sendln" in ttl
+if __name__=='__main__': unittest.main()

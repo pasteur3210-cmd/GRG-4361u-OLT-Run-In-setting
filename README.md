@@ -1,26 +1,18 @@
-# V3600GS Connect V1.0.6 — Windows 11
+# V3600GS Connect V1.0.7
 
-## Purpose
-Prove COM auto-detection, Tera Term serial session and four-stage login, without adding ONU/Ping checks.
+第一階段連線 / 自動登入驗證工具：Windows 11 EXE，測試電腦毋須 Python，但須安裝舊版 Tera Term。
 
-## Critical fix from V1.0.4
-V1.0.4 execution.log showed `CONNECT_RESULT|0` and `LINK_STATE=0`. The old process started `ttpmacro.exe` first and relied on a TTL `connect` command. V1.0.6 starts `ttermpro.exe` with `/C=COM_NUMBER`, `/BAUD=115200` and `/M=full_path_to_macro`, so Tera Term owns the COM port and attaches the macro. It DOES NOT open the port separately with pyserial.
+## 關鍵修正
+- 不再使用 `ttermpro.exe /C=3 /BAUD=115200 /M=...`（舊版不相容）。
+- 由 `ttpmacro.exe` 載入 `connect.ttl`，TTL 執行 `connect '/C=3 /BAUD=115200'`。
+- TTL 暫存於可寫入的 ASCII、無空白目錄（優先 `C:\Users\Public\V3600GS_Macro`）；完成/失敗紀錄同步到 EXE 旁的 `records`。
+- 自動登入只在 Serial link 建立後繼續，依 Prompt 檢查 Login → enable → config terminal → interface gpon 0/1。
+- 並不包含 ONU/Ping 功能。
 
-## Factory steps
-1. Keep Tera Term installed at `C:\Program Files (x86)\teraterm`. Close existing COM3 Tera Term sessions.
-2. Place EXE in a **writable directory** (e.g. Desktop, D: test folder). Do not place EXE in Program Files.
-3. Launch EXE → select USB-Enhanced-SERIAL COM → Connect & Auto Login.
-4. Check Tera Term for `gpon-olt(config-pon-0/1)#`.
-5. Check `records` folder next to EXE for `execution.log` and timestamped run folders.
-6. On FAIL, archive the entire `records` directory and provide the GUI/terminal screenshot.
+## 使用
+1. 上傳 GitHub ZIP 全部檔案，包含隱藏 `.github` 資料夾。
+2. Actions → Build V3600GS Connect → Run workflow，下載 EXE。
+3. 將 EXE 放在可寫入資料夾，不要放 Program Files。關閉其他 COM3 Tera Term 視窗。
+4. Connect & Auto Login；如失敗，將 EXE 同層 `records` 資料夾壓縮回傳。
 
-## Credentials
-Login and enable passwords are hard-coded for this agreed lab setup; they are intentionally not written to text logs. `connect.ttl` necessarily contains credentials and should be handled as sensitive.
-
-## Limits
-No physical OLT/Windows Tera Term verification is possible here. Script syntax/unit checks cannot guarantee successful session attachment on the 2011 Tera Term build.
-
-## V1.0.6 build regression correction
-- Windows backslash (`\\`) versus forward slash (`/`) caused the V1.0.5 `test_launch_arguments` false failure.
-- The test now compares normalized Windows paths using `PureWindowsPath`; launch behavior is unchanged.
-- Serial login to an actual V3600GS remains unverified.
+**驗證限制**：自動化單元測試不等同 Windows GitHub Actions 真實編譯或 V3600GS 實機登入成功。舊版 Tera Term 的 Macro/Serial 相容性仍待現場驗證。

@@ -1,6 +1,8 @@
 """V3600GS serial Tera Term connection proof of concept (Windows)."""
 import datetime as dt
 import traceback
+import tempfile
+import time
 import os
 from pathlib import Path
 import re
@@ -19,7 +21,7 @@ BASE = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) el
 # Factory request: records live beside EXE. Run in a writable folder.
 RECORDS = BASE / 'records'
 TARGET_LABEL = 'USB-ENHANCED-SERIAL'
-APP_VERSION = '1.0.6'
+APP_VERSION = '1.0.7'
 
 
 def find_teraterm():
@@ -63,20 +65,48 @@ def ttl_quoted(value):
     return "'" + value.replace('/', '\\') + "'"
 
 
+def macro_work_root():
+    """Use an ASCII-only staging location for legacy Tera Term 4.x.
+
+    All permanent records stay beside the EXE. The public staging path avoids
+    a TTPMACRO.exe path parser issue with long Unicode/space-filled directories.
+    """
+    candidates = []
+    if sys.platform == 'win32':
+        public = os.environ.get('PUBLIC', r'C:\Users\Public')
+        candidates.append(Path(public) / 'V3600GS_Macro')
+    candidates.append(Path(tempfile.gettempdir()) / 'V3600GS_Macro')
+    for root in candidates:
+        try:
+            if not str(root).isascii() or "'" in str(root) or ' ' in str(root):
+                continue
+            root.mkdir(parents=True, exist_ok=True)
+            test = root / '_write_test.tmp'
+            test.write_text('ok', encoding='ascii')
+            test.unlink()
+            return root
+        except OSError:
+            continue
+    raise RuntimeError('No writable ASCII-only macro staging directory; check PUBLIC and TEMP paths.')
+
+
 def build_macro(com, status_file, raw_log, stage_file=None):
-    """TTL attached to TTERMPRO using /M; no connect command (V1.0.4 failed link=0)."""
+    """Standalone legacy TTL. TTPMACRO creates a new Tera Term serial session.
+
+    No /M and no /DS: old installed Tera Term may reject /C plus /M.
+    Stage/status paths are ASCII-only and copied to EXE/records by the GUI.
+    """
     if stage_file is None:
         stage_file = status_file.with_name('stage.txt')
     status = ttl_quoted(str(status_file))
     stage = ttl_quoted(str(stage_file))
     raw = ttl_quoted(str(raw_log))
-    return f"""; V3600GS V1.0.6 - TTERMPRO opens COM{com} at 115200 and attaches this TTL via /M=.
-; Do not use TTL 'connect': V1.0.4 showed LINK_STATE=0 with this launch sequence.
+    return f"""; V3600GS V1.0.7 legacy Tera Term 4.x standalone TTL
+; TTPMACRO -> connect serial (/C and /BAUD) -> login. Do not pass /M.
 filecreate fhandle {stage}
-filewriteln fhandle 'STARTED|ATTACHED_MACRO'
+filewriteln fhandle 'STARTED|MACRO'
 fileclose fhandle
-pause 1
-testlink
+connect '/C={com} /BAUD=115200'
 link_state = result
 if link_state = 2 goto SERIAL_READY
 pause 2
@@ -94,11 +124,11 @@ fileclose fhandle
 logopen {raw} 0 0
 pause 1
 sendln
-timeout = 8
+timeout = 10
 wait 'Login:' 'login:'
 if result <> 0 goto LOGIN_PROMPT_OK
 sendln
-timeout = 12
+timeout = 10
 wait 'Login:' 'login:'
 if result = 0 goto LOGIN_PROMPT_FAIL
 :LOGIN_PROMPT_OK
@@ -144,53 +174,70 @@ if result = 0 goto INTERFACE_FAIL
 filecreate fhandle {status}
 filewriteln fhandle 'READY|gpon-olt(config-pon-0/1)#'
 fileclose fhandle
+logclose
 end
 :CONNECT_FAIL
 filecreate fhandle {status}
 int2str state_text link_state
-stage_msg = 'FAIL|TERATERM_MACRO_LINK|LINK_STATE='
+stage_msg = 'FAIL|SERIAL_CONNECT|LINK_STATE='
 strconcat stage_msg state_text
 filewriteln fhandle stage_msg
 fileclose fhandle
 end
 :LOGIN_PROMPT_FAIL
 filecreate fhandle {status}
-filewriteln fhandle 'FAIL|LOGIN_PROMPT_TIMEOUT|SERIAL_CONNECTED'
+filewriteln fhandle 'FAIL|LOGIN_PROMPT_TIMEOUT'
 fileclose fhandle
+logclose
 end
 :LOGIN_FAIL
 filecreate fhandle {status}
 filewriteln fhandle 'FAIL|LOGIN'
 fileclose fhandle
+logclose
 end
 :ENABLE_FAIL
 filecreate fhandle {status}
 filewriteln fhandle 'FAIL|ENABLE'
 fileclose fhandle
+logclose
 end
 :CONFIG_FAIL
 filecreate fhandle {status}
 filewriteln fhandle 'FAIL|CONFIG'
 fileclose fhandle
+logclose
 end
 :INTERFACE_FAIL
 filecreate fhandle {status}
 filewriteln fhandle 'FAIL|GPON_INTERFACE'
 fileclose fhandle
+logclose
 end
 """
 
 
-def launch_arguments(ttermpro, com, macro_file):
-    """Tera Term is the owner of COM and launches the attached TTL via /M."""
-    return [str(ttermpro), f'/C={com}', '/BAUD=115200', f'/M={macro_file}']
+def launch_arguments(macro_exe, macro_file):
+    """Only start the macro interpreter; TTL connects with /C and /BAUD."""
+    return [str(macro_exe), str(macro_file)]
+
+
+def copy_staging_records(staging_dir, run_dir):
+    """Mirror diagnostics from ASCII macro staging into EXE-side records."""
+    for name in ('stage.txt', 'status.txt', 'serial.log', 'connect.ttl'):
+        source = staging_dir / name
+        if source.exists():
+            try:
+                shutil.copy2(source, run_dir / name)
+            except OSError:
+                pass
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('V3600GS Connect V1.0.6')
-        self.geometry('900x465')
+        self.title('V3600GS Connect V1.0.7')
+        self.geometry('900x485')
         self.resizable(True, False)
         self.path = tk.StringVar(value=find_teraterm())
         self.selected = tk.StringVar()
@@ -200,6 +247,7 @@ class App(tk.Tk):
         self.last_stage_file = None
         self.last_run_dir = None
         self.last_stage = None
+        self.last_staging_dir = None
         self.launch_process = None
         self._poll_count = 0
         self.ports = []
@@ -278,24 +326,27 @@ class App(tk.Tk):
             run_dir = RECORDS / stamp
             run_dir.mkdir(parents=True, exist_ok=True)
             self.last_run_dir = run_dir
-            status_file = run_dir / 'status.txt'
-            stage_file = run_dir / 'stage.txt'
-            macro_file = run_dir / 'connect.ttl'
-            raw_log = run_dir / 'serial.log'
-            encoding = 'mbcs' if sys.platform == 'win32' else 'utf-8'
+            stage_root = macro_work_root()
+            staging_dir = stage_root / stamp
+            staging_dir.mkdir(parents=True, exist_ok=False)
+            status_file = staging_dir / 'status.txt'
+            stage_file = staging_dir / 'stage.txt'
+            macro_file = staging_dir / 'connect.ttl'
+            raw_log = staging_dir / 'serial.log'
+            encoding = 'mbcs' if sys.platform == 'win32' else 'ascii'
             macro_file.write_text(build_macro(number, status_file, raw_log, stage_file), encoding=encoding)
-            self.audit(f'MACRO_CREATED | COM={chosen} | File={macro_file} | Baud=115200')
-            ttermpro = macro_exe.parent / 'ttermpro.exe'
-            args = launch_arguments(ttermpro, number, macro_file)
-            self.audit(f'TERATERM_LAUNCH | COM={chosen} | BAUD=115200 | MACRO={macro_file}')
+            self.audit(f'MACRO_CREATED | COM={chosen} | Staging={staging_dir} | Baud=115200')
+            args = launch_arguments(macro_exe, macro_file)
+            self.audit(f'TTPMACRO_LAUNCH | COM={chosen} | PATH={macro_file}')
             self.launch_process = subprocess.Popen(args, cwd=str(macro_exe.parent))
-            self.audit(f'TERATERM_STARTED | PID={self.launch_process.pid}')
+            self.audit(f'TTPMACRO_STARTED | PID={self.launch_process.pid}')
+            self.last_staging_dir = staging_dir
             self.last_status_file = status_file
             self.last_stage_file = stage_file
             self.last_macro_file = macro_file
             self.last_stage = None
             self._poll_count = 0
-            self.status.set(f'Tera Term started (PID {self.launch_process.pid}); COM={chosen}; Macro attached via /M; records: {RECORDS}')
+            self.status.set(f'TTL started (PID {self.launch_process.pid}); COM={chosen}; awaiting serial connection. Records: {RECORDS}')
             self.after(700, self.poll_result)
         except Exception as exc:
             self.status.set(f'LAUNCH ERROR: {type(exc).__name__}: {exc}')
@@ -308,6 +359,8 @@ class App(tk.Tk):
 
     def poll_result(self):
         self._poll_count += 1
+        if self.last_staging_dir and self.last_run_dir:
+            copy_staging_records(self.last_staging_dir, self.last_run_dir)
         if self.last_stage_file and self.last_stage_file.exists():
             try:
                 stage = self.last_stage_file.read_text(encoding='ascii', errors='replace').strip()
@@ -321,13 +374,13 @@ class App(tk.Tk):
             self.check_result()
             return
         if self.launch_process is not None and self.launch_process.poll() is not None:
-            self.audit(f'TERATERM_EXIT_WITHOUT_STATUS | code={self.launch_process.returncode}')
-            self.status.set('Tera Term closed without login status; inspect records: ' + str(RECORDS))
+            self.audit(f'TTPMACRO_EXIT_WITHOUT_STATUS | code={self.launch_process.returncode}')
+            self.status.set('Macro ended without status; inspect records: ' + str(RECORDS))
             return
         # No silent infinite wait. Allow initial connection and all prompt timeouts (~80 s).
-        if self._poll_count >= 150:
+        if self._poll_count >= 180:
             self.audit('TIMEOUT_WAITING_FOR_RESULT')
-            self.status.set('TIMEOUT: no result after ~105 s. Inspect the Tera Term window and records: ' + str(RECORDS))
+            self.status.set('TIMEOUT: no result after ~126 s. Inspect the Tera Term window and records: ' + str(RECORDS))
             return
         if self._poll_count % 8 == 0 and not self.last_stage:
             self.status.set(f'Macro running; waiting for OLT prompts ({round(self._poll_count * 0.7)} s). '
@@ -342,6 +395,8 @@ class App(tk.Tk):
         if not self.last_status_file:
             messagebox.showinfo('Result', 'Start a connection first.')
             return
+        if self.last_staging_dir and self.last_run_dir:
+            copy_staging_records(self.last_staging_dir, self.last_run_dir)
         if self.last_status_file.exists():
             result = self.last_status_file.read_text(encoding='utf-8', errors='replace').strip()
             if getattr(self, '_reported_status', None) != (self.last_status_file, result):

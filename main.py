@@ -19,7 +19,7 @@ BASE = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) el
 # Factory request: records live beside EXE. Run in a writable folder.
 RECORDS = BASE / 'records'
 TARGET_LABEL = 'USB-ENHANCED-SERIAL'
-APP_VERSION = '1.0.5'
+APP_VERSION = '1.0.6'
 
 
 def find_teraterm():
@@ -70,7 +70,7 @@ def build_macro(com, status_file, raw_log, stage_file=None):
     status = ttl_quoted(str(status_file))
     stage = ttl_quoted(str(stage_file))
     raw = ttl_quoted(str(raw_log))
-    return f"""; V3600GS V1.0.5 - TTERMPRO opens COM{com} at 115200 and attaches this TTL via /M=.
+    return f"""; V3600GS V1.0.6 - TTERMPRO opens COM{com} at 115200 and attaches this TTL via /M=.
 ; Do not use TTL 'connect': V1.0.4 showed LINK_STATE=0 with this launch sequence.
 filecreate fhandle {stage}
 filewriteln fhandle 'STARTED|ATTACHED_MACRO'
@@ -189,7 +189,7 @@ def launch_arguments(ttermpro, com, macro_file):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title('V3600GS Connect V1.0.5')
+        self.title('V3600GS Connect V1.0.6')
         self.geometry('900x465')
         self.resizable(True, False)
         self.path = tk.StringVar(value=find_teraterm())

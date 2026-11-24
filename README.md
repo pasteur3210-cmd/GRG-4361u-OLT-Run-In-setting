@@ -1,10 +1,10 @@
-# V3600GS Connect V1.0.5 — Windows 11
+# V3600GS Connect V1.0.6 — Windows 11
 
 ## Purpose
 Prove COM auto-detection, Tera Term serial session and four-stage login, without adding ONU/Ping checks.
 
 ## Critical fix from V1.0.4
-V1.0.4 execution.log showed `CONNECT_RESULT|0` and `LINK_STATE=0`. The old process started `ttpmacro.exe` first and relied on a TTL `connect` command. V1.0.5 starts `ttermpro.exe` with `/C=COM_NUMBER`, `/BAUD=115200` and `/M=full_path_to_macro`, so Tera Term owns the COM port and attaches the macro. It DOES NOT open the port separately with pyserial.
+V1.0.4 execution.log showed `CONNECT_RESULT|0` and `LINK_STATE=0`. The old process started `ttpmacro.exe` first and relied on a TTL `connect` command. V1.0.6 starts `ttermpro.exe` with `/C=COM_NUMBER`, `/BAUD=115200` and `/M=full_path_to_macro`, so Tera Term owns the COM port and attaches the macro. It DOES NOT open the port separately with pyserial.
 
 ## Factory steps
 1. Keep Tera Term installed at `C:\Program Files (x86)\teraterm`. Close existing COM3 Tera Term sessions.
@@ -19,3 +19,8 @@ Login and enable passwords are hard-coded for this agreed lab setup; they are in
 
 ## Limits
 No physical OLT/Windows Tera Term verification is possible here. Script syntax/unit checks cannot guarantee successful session attachment on the 2011 Tera Term build.
+
+## V1.0.6 build regression correction
+- Windows backslash (`\\`) versus forward slash (`/`) caused the V1.0.5 `test_launch_arguments` false failure.
+- The test now compares normalized Windows paths using `PureWindowsPath`; launch behavior is unchanged.
+- Serial login to an actual V3600GS remains unverified.

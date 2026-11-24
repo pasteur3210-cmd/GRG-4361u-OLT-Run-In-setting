@@ -1,5 +1,5 @@
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from main import com_number, build_macro, ttl_quoted, RECORDS
@@ -26,7 +26,11 @@ class Tests(unittest.TestCase):
                                 Path('C:/My Tool/records/run/connect.ttl'))
         self.assertEqual(args[1], '/C=3')
         self.assertEqual(args[2], '/BAUD=115200')
-        self.assertEqual(args[3], '/M=C:/My Tool/records/run/connect.ttl')
+        self.assertTrue(args[3].startswith('/M='))
+        self.assertEqual(PureWindowsPath(args[3][3:]),
+                         PureWindowsPath('C:/My Tool/records/run/connect.ttl'))
+        self.assertEqual(len(args), 4)
+        self.assertNotIn('\"', args[3])
 
     def test_records_are_beside_executable(self):
         import main

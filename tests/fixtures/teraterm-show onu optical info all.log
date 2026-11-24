@@ -1,0 +1,31 @@
+
+gpon-olt(config-pon-0/1)# show onu optical-info all
+ONU ID                     : 1
+Alarm                      : enable
+Piggyback DBA rpt mode     : mode 0 only
+Rx optical level(ONU)      : -26.78
+Lower rx optical threshold : ont internal policy
+Upper rx optical threshold : ont internal policy
+Tx optical level           : 6.96 
+Lower tx optical threshold : ont internal policy
+Upper tx optical threshold : ont internal policy
+ONU response time          : 0
+Power feed voltage         : 3.28(V) 
+Laser bias current         : 41.864(mA) 
+Temperature                : 65.172(C) 
+
+ONU ID                     : 2
+Alarm                      : enable
+Piggyback DBA rpt mode     : mode 0 only
+Rx optical level(ONU)      : -25.23
+Lower rx optical threshold : ont internal policy
+Upper rx optical threshold : ont internal policy
+Tx optical level           : 6.95 
+Lower tx optical threshold : ont internal policy
+Upper tx optical threshold : ont internal policy
+ONU response time          : 0
+Power feed voltage         : 3.28(V) 
+Laser bias current         : 40.296(mA) 
+Temperature                : 38.012(C) 
+
+gpon-olt(config-pon-0/1)# 

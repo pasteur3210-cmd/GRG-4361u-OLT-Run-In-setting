@@ -1,17 +1,35 @@
-# V3600GS Connect V1.0.8 — Direct Serial
+# V3600GS Connect V1.0.10 — ONU Single Check + Excel
 
-本版移除 Tera Term Macro 自動控制。GUI EXE 直接使用 pyserial 開啟 USB-Enhanced-SERIAL COM (115200/8N1)，完成 Login → Enable → config terminal → interface gpon 0/1。
+## Scope
+Built on V1.0.8 direct Serial connection tested on real V3600GS. Adds two read-only CLI commands after login:
 
-**自動連線前必須關閉 Tera Term，因 COM Port 不可被兩個應用程式同時占用。** 人工操作時可關閉/完成 EXE 登入後，再自行開啟 Tera Term。
+- `show onu time-stamp`
+- `show onu optical-info all`
 
-## 操作
-1. 在 Windows 11 安裝 USB Console 驅動，連接 OLT。
-2. 以 GitHub Actions 編譯 EXE；Windows 測試電腦不需要安裝 Python。
-3. 將 EXE 放在可寫入資料夾（例如 Desktop 或 D:\Test），不要放在 Program Files。
-4. 關閉 Tera Term，執行 EXE。選擇 USB-Enhanced-SERIAL，按 **Connect & Auto Login**。
-5. 看到 **LOGIN READY | gpon-olt(config-pon-0/1)#** 代表完成這次連線與登入驗證。
-6. 失敗時，將 EXE 同層 `records` 資料夾壓縮提供分析。
+Button **Login + ONU Check Once (Excel)** connects COM, auto-logins, executes both commands, saves the raw CLI output and an `.xlsx` file, then releases COM. The former **Connect & Auto Login** button is retained as a separate smoke test.
 
-**重要限制**：本版只驗證 Login 到 GPON 0/1，不進行 ONU 查詢或 Ping；登入驗證後會釋放 Serial Port，不持有連線。後續 ONU 監測將使用長駐連線版。
+Connection: auto-detect USB-Enhanced-SERIAL COM, 115200 / 8N1 / no flow control, account/enable credentials as agreed, GPON interface fixed 0/1.
 
-本版沒有 Tera Term 視窗；原始訊息不記錄帳號密碼。固定測試密碼目前儲存在 EXE，僅用於專用測試環境。
+## Output
+EXE-directory/records/YYYYMMDD_HHMMSS_microseconds/
+
+- `execution.log` (stage and errors)
+- `onu_time_stamp.log`
+- `onu_optical_info.log`
+- `ONU_Check_Record.xlsx` (01_Loop_Summary, 02_ONU_Detail, 03_Field_Notes)
+- `status.txt`
+
+**This is a single-check first delivery**. The Excel layout dynamically creates columns for the ONU IDs actually returned (including 10–16 or more), one row per cycle. Multiple cycles passed to the exporter share stable ONU-ID columns, and missing devices do not cause shifts. Recurring loop scheduling and parallel multi-IP Ping are NOT YET implemented; they are planned follow-on functions. The current `Status` is `NOT VERIFIED` because these two CLI commands do not prove online/offline. `N/A` values remain `N/A`.
+
+## GitHub Actions
+Upload **all the files** from the GitHub ZIP to the repository root, including `.github/workflows/build.yml`. Run the `Build V3600GS Connect` workflow, download the `V3600GS_Connect_V1.0.10` artifact, extract `V3600GS_Connect_V1.0.10.exe`. No Python installation is needed on the factory PC; close Tera Term first.
+
+## Verification
+Run the same commands as workflow:
+
+```
+python -m compileall -q main.py onu_parser.py excel_record.py tests
+python -m unittest discover -s tests -v
+```
+
+The tests cover the supplied actual device logs, including `1/12026:...N/AN/A...` merged columns, two CLI commands, dynamic 2/16/20 ONU Excel structure, login sequence, and version naming. GitHub Windows PyInstaller build and V3600GS real CLI data acquisition need validation on the user's computer.

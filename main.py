@@ -14,9 +14,11 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
 import serial
+from onu_parser import parse_time_stamp, parse_optical, merge_data
+from excel_record import export_cycles
 from serial.tools import list_ports
 
-VERSION = "1.0.8"
+VERSION = "1.0.10"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -109,40 +111,80 @@ class SerialLogin:
                     self.rx=self.rx[-2048:]
         raise LoginError('Timeout waiting for '+phase)
 
-    def run(self):
+    def run(self, check=False, output_folder=None):
+        """Login; optionally check both ONU commands before closing COM."""
         try:
             self.open()
-            self.stage('SEND_WAKEUP')
-            self.write('')
-            try:
-                self.wait_for([r'Login\s*:',r'Password\s*:',r'gpon-olt(?:\([^\r\n]*\))?[>#]'],5,phase='INITIAL_PROMPT')
-            except LoginError:
-                self.write('')
-                self.wait_for([r'Login\s*:',r'Password\s*:',r'gpon-olt(?:\([^\r\n]*\))?[>#]'],8,phase='INITIAL_PROMPT_RETRY')
-            # Initial connection can be at a login prompt or an already-logged-in shell.
-            prompt=self.rx[-1000:]
-            if re.search(r'gpon-olt\(config-pon-0/1\)#\s*$',prompt,re.I):
-                self.stage('READY');return TARGET_PROMPT
-            if re.search(r'gpon-olt\(config\)#\s*$',prompt,re.I):
-                return self.enter_interface()
-            if re.search(r'gpon-olt#\s*$',prompt,re.I):
-                return self.enter_config()
-            if re.search(r'gpon-olt>\s*$',prompt,re.I):
-                return self.enable()
-            if re.search(r'Password\s*:\s*$',prompt,re.I):
-                # This is an ambiguous password prompt, so fail safely rather than risking attempts.
-                raise LoginError('Password prompt present at startup; unknown login state. Reopen serial session or manually reset prompt.')
-            if not re.search(r'Login\s*:',prompt,re.I):
-                raise LoginError('Unrecognized initial CLI prompt')
-            self.stage('SEND_USERNAME')
-            self.write(USER)
-            self.wait_for(r'Password\s*:',10,phase='LOGIN_PASSWORD_PROMPT')
-            self.stage('SEND_LOGIN_PASSWORD')
-            self.write(LOGIN_PASSWORD,secret=True)
-            self.wait_for(r'gpon-olt>\s*',12,phase='USER_PROMPT')
-            return self.enable()
+            result = self._login_sequence()
+            if not check:
+                return result
+            if output_folder is None:
+                raise ValueError('output_folder is required for check')
+            folder = Path(output_folder)
+            self.stage('QUERY_ONU_TIMESTAMP')
+            timestamp_raw = self.command('show onu time-stamp', timeout=25)
+            (folder/'onu_time_stamp.log').write_text(timestamp_raw, encoding='utf-8')
+            self.stage('QUERY_ONU_OPTICAL')
+            optical_raw = self.command('show onu optical-info all', timeout=40)
+            (folder/'onu_optical_info.log').write_text(optical_raw, encoding='utf-8')
+            timestamp=parse_time_stamp(timestamp_raw)
+            optical=parse_optical(optical_raw)
+            merged=merge_data(timestamp,optical)
+            self.log.info('PARSE|TIMESTAMP=%s|OPTICAL=%s|MERGED=%s',len(timestamp),len(optical),len(merged))
+            return result,merged
         finally:
             self.close()
+
+    def command(self, cmd, timeout=25):
+        """Capture until complete GPON prompt; reject partial/truncated output."""
+        self.stage('SEND_'+cmd.upper().replace(' ','_').replace('-','_'))
+        self.write(cmd)
+        deadline=time.monotonic()+timeout
+        result=''
+        more=re.compile(r'(?:--\s*more\s*--|--More--)',re.I)
+        prompt=re.compile(r'(?:^|[\r\n])\s*gpon-olt\(config-pon-0/1\)#\s*$',re.I)
+        while time.monotonic()<deadline:
+            if self.stop.is_set():raise LoginError('User stopped')
+            b=self.link.read(4096)
+            if not b:continue
+            text=safe_ascii(b)
+            result+=text
+            self.log.info('CLI_RX|%s|%s',cmd,len(b))
+            if len(result)>2000000:raise LoginError('CLI output exceeded 2 MB')
+            if more.search(result[-120:]):
+                self.link.write(b' ')
+                self.link.flush()
+                result=more.sub('',result)
+            if prompt.search(result):
+                self.stage('CLI_COMPLETE_'+cmd.upper().replace(' ','_').replace('-','_'))
+                return result
+        raise LoginError('Timeout waiting for CLI prompt after '+cmd)
+
+    def _login_sequence(self):
+        self.stage('SEND_WAKEUP')
+        self.write('')
+        try:
+            self.wait_for([r'Login\s*:',r'Password\s*:',r'gpon-olt(?:\([^\r\n]*\))?[>#]'],5,phase='INITIAL_PROMPT')
+        except LoginError:
+            self.write('')
+            self.wait_for([r'Login\s*:',r'Password\s*:',r'gpon-olt(?:\([^\r\n]*\))?[>#]'],8,phase='INITIAL_PROMPT_RETRY')
+        prompt=self.rx[-1000:]
+        if re.search(r'gpon-olt\(config-pon-0/1\)#\s*$',prompt,re.I):
+            self.stage('READY');return TARGET_PROMPT
+        if re.search(r'gpon-olt\(config\)#\s*$',prompt,re.I):return self.enter_interface()
+        if re.search(r'gpon-olt#\s*$',prompt,re.I):return self.enter_config()
+        if re.search(r'gpon-olt>\s*$',prompt,re.I):return self.enable()
+        if re.search(r'Password\s*:\s*$',prompt,re.I):
+            raise LoginError('Password prompt at startup; unknown state')
+        if not re.search(r'Login\s*:',prompt,re.I):
+            raise LoginError('Unrecognized initial CLI prompt')
+        self.stage('SEND_USERNAME')
+        self.write(USER)
+        self.wait_for(r'Password\s*:',10,phase='LOGIN_PASSWORD_PROMPT')
+        self.stage('SEND_LOGIN_PASSWORD')
+        self.write(LOGIN_PASSWORD,secret=True)
+        self.wait_for(r'gpon-olt>\s*',12,phase='USER_PROMPT')
+        return self.enable()
 
     def enable(self):
         self.stage('SEND_ENABLE')
@@ -181,8 +223,8 @@ def make_logger(folder):
 class GUI:
     def __init__(self,root):
         self.root=root
-        self.root.title('V3600GS Connect V'+VERSION+' — Direct Serial')
-        self.root.geometry('790x410')
+        self.root.title('V3600GS Connect V'+VERSION+' — ONU Check')
+        self.root.geometry('860x490')
         self.messages=queue.Queue()
         self.stop_flag=threading.Event()
         self.running=False
@@ -201,6 +243,8 @@ class GUI:
         actions=ttk.Frame(frm);actions.pack(fill='x',pady=18)
         self.connect=ttk.Button(actions,text='Connect & Auto Login',command=self.start)
         self.connect.pack(side='left')
+        self.check_btn=ttk.Button(actions,text='Login + ONU Check Once (Excel)',command=lambda:self.start(check=True))
+        self.check_btn.pack(side='left',padx=10)
         ttk.Button(actions,text='Stop',command=self.stop).pack(side='left',padx=10)
         ttk.Button(actions,text='Open Records Folder',command=self.open_records).pack(side='right')
         ttk.Label(frm,textvariable=self.state,foreground='#005ea8').pack(anchor='w')
@@ -225,7 +269,7 @@ class GUI:
         self.port_var.set(key)
         self.display(('Auto-selected '+preferred) if preferred else 'Select a COM port; no unique USB-Enhanced-SERIAL detected')
 
-    def start(self):
+    def start(self,check=False):
         if self.running:return
         port=self.options.get(self.port_var.get(),'')
         if not valid_port(port):
@@ -239,16 +283,25 @@ class GUI:
             return
         self.running=True
         self.connect.configure(state='disabled')
+        self.check_btn.configure(state='disabled')
         self.stop_flag.clear()
-        self.display('Connecting '+port+' (close Tera Term first)...')
+        self.display(('Checking ONUs via ' if check else 'Connecting ')+port+' (close Tera Term first)...')
         logger.info('START|VERSION=%s|PORT=%s',VERSION,port)
         def worker():
             try:
                 client=SerialLogin(port,logger,self.stop_flag,on_stage=lambda stage:self.messages.put(('stage',stage)))
-                result=client.run()
+                returned=client.run(check=check,output_folder=folder)
+                if check:
+                    result, units=returned
+                    cycle={'time':dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'onus':units}
+                    outfile=export_cycles(folder/'ONU_Check_Record.xlsx',[cycle])
+                    logger.info('EXCEL_CREATED|%s|ONU_COUNT=%d',outfile,len(units))
+                    self.messages.put(('stage',f'EXCEL SAVED | {outfile} | ONU count={len(units)}'))
+                else:
+                    result=returned
                 logger.info('RESULT|PASS|%s',result)
                 (folder/'status.txt').write_text('PASS|'+result+'\n',encoding='utf-8')
-                self.messages.put(('done','LOGIN READY | '+result))
+                self.messages.put(('done',('ONU CHECK COMPLETED | ' if check else 'LOGIN READY | ')+result))
             except Exception as exc:
                 logger.exception('RESULT|FAIL|%s',type(exc).__name__)
                 (folder/'status.txt').write_text('FAIL|'+type(exc).__name__+'|'+str(exc)+'\n',encoding='utf-8')
@@ -278,6 +331,7 @@ class GUI:
                 else:
                     self.running=False
                     self.connect.configure(state='normal')
+                    self.check_btn.configure(state='normal')
                     self.display(msg)
         except queue.Empty:pass
         self.root.after(100,self.poll)

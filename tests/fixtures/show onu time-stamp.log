@@ -1,0 +1,6 @@
+show onu time-stamp 
+
+onu id     last regist time        last deregist time      last deregist reason      alive time
+1/12026:11:23 16:47:05N/AN/A20:52:29
+1/22026:11:23 16:47:48N/AN/A20:51:46
+gpon-olt(config-pon-0/1)# 

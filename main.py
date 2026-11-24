@@ -17,9 +17,10 @@ import serial
 from onu_parser import parse_time_stamp, parse_optical, merge_state_data, parse_onu_state
 from excel_record import export_cycles
 from session_runner import run_session, rebuild_excel
+from ping_mapping import normalize_ips, verify_mapping
 from serial.tools import list_ports
 
-VERSION = "1.0.12"
+VERSION = "1.0.13"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -229,7 +230,7 @@ class GUI:
     def __init__(self, root):
         self.root = root
         root.title('V3600GS Connect V'+VERSION+' — ONU Run-in')
-        root.geometry('970x640')
+        root.geometry('1100x780')
         self.messages = queue.Queue()
         self.stop_flag = threading.Event()
         self.running = False
@@ -240,6 +241,9 @@ class GUI:
         self.state = tk.StringVar(value='READY — select COM and run')
         self.cycle_state = tk.StringVar(value='Completed cycles: 0')
         self.last_excel = None
+        self.verified_mapping = None
+        self.verified_snapshot = None
+        self.ip_text = None
         frm=ttk.Frame(root,padding=16)
         frm.pack(fill='both',expand=True)
         ttk.Label(frm,text='V3600GS ONU Run-in — Direct Serial',font=('Segoe UI',14,'bold')).pack(anchor='w')
@@ -262,8 +266,24 @@ class GUI:
         ttk.Label(nums,text='Duration (hours, 0 = until Stop):').pack(side='left')
         self.duration_input=ttk.Entry(nums,textvariable=self.duration_var,width=9)
         self.duration_input.pack(side='left',padx=(5,0))
+        mappingframe=ttk.LabelFrame(frm,text='Pre-Run DUT IP / MAC / GPON SN Verification',padding=8)
+        mappingframe.pack(fill='x',pady=(3,7))
+        ttk.Label(mappingframe,text='DUT IP list (one IPv4 per line; same LAN as test PC)').pack(anchor='w')
+        self.ip_text=tk.Text(mappingframe,height=3,width=65)
+        self.ip_text.pack(fill='x',pady=(2,5))
+        self.ip_text.bind('<KeyRelease>',self.invalidate_mapping)
+        mbuttons=ttk.Frame(mappingframe);mbuttons.pack(fill='x')
+        self.verify_btn=ttk.Button(mbuttons,text='Verify IP / MAC / GPON SN Mapping',command=self.verify)
+        self.verify_btn.pack(side='left')
+        self.mapping_label=tk.StringVar(value='Mapping NOT VERIFIED — verify before Start')
+        ttk.Label(mbuttons,textvariable=self.mapping_label).pack(side='left',padx=12)
+        self.map_tree=ttk.Treeview(mappingframe,columns=('ip','mac','onu','sn','ping','status'),show='headings',height=4)
+        for key,label,width in [('ip','DUT IP',130),('mac','MAC',150),('onu','ONU ID',80),('sn','GPON SN',150),('ping','Pre-Ping',90),('status','Mapping',170)]:
+            self.map_tree.heading(key,text=label)
+            self.map_tree.column(key,width=width,stretch=True)
+        self.map_tree.pack(fill='x',pady=(5,0))
         buttons=ttk.Frame(frm);buttons.pack(fill='x',pady=(8,9))
-        self.start_btn=ttk.Button(buttons,text='Start ONU Check',command=self.start)
+        self.start_btn=ttk.Button(buttons,text='Start ONU Check',command=self.start,state='disabled')
         self.start_btn.pack(side='left')
         self.stop_btn=ttk.Button(buttons,text='Stop',command=self.stop,state='disabled')
         self.stop_btn.pack(side='left',padx=10)
@@ -274,6 +294,7 @@ class GUI:
         ttk.Label(frm,textvariable=self.cycle_state).pack(anchor='w',pady=(3,0))
         self.out=tk.Text(frm,height=12,wrap='word',state='disabled')
         self.out.pack(fill='both',expand=True,pady=(8,0))
+        self.port_var.trace_add('write',lambda *_:self.invalidate_mapping())
         self.refresh()
         self.update_mode()
         root.after(100,self.poll)
@@ -284,7 +305,63 @@ class GUI:
         self.out.see('end')
         self.out.configure(state='disabled')
 
+    def invalidate_mapping(self,event=None):
+        self.verified_mapping=None
+        self.verified_snapshot=None
+        self.mapping_label.set('Mapping NOT VERIFIED — verify before Start')
+        self.start_btn.configure(state='disabled')
+
+    def mapping_snapshot(self):
+        return (self.options.get(self.port_var.get(),''),self.ip_text.get('1.0','end').strip())
+
+    def verify(self):
+        if self.running:return
+        port,iptext=self.mapping_snapshot()
+        if not valid_port(port):
+            messagebox.showerror('COM Port','Select COM port');return
+        try:
+            ips=normalize_ips(iptext)
+        except ValueError as exc:
+            messagebox.showerror('DUT IP List',str(exc));return
+        self.invalidate_mapping()
+        self.running=True
+        self.stop_flag.clear()
+        self.verify_btn.configure(state='disabled')
+        self.combo.configure(state='disabled')
+        self.refresh_button.configure(state='disabled')
+        self.state.set('VERIFYING MAPPING — ONU state and IP / MAC ...')
+        logger_folder=RECORD_ROOT/('Mapping_'+dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
+        try:logger=make_logger(logger_folder)
+        except OSError as exc:
+            self.running=False
+            self.verify_btn.configure(state='normal')
+            self.combo.configure(state='readonly')
+            self.refresh_button.configure(state='normal')
+            messagebox.showerror('Record',str(exc));return
+        snapshot=(port,iptext)
+        def worker():
+            try:
+                client=SerialLogin(port,logger,self.stop_flag,on_stage=lambda x:self.messages.put(('stage',x)))
+                try:
+                    client.open();client._login_sequence()
+                    raw=client.command('show onu state',timeout=35)
+                    (logger_folder/'onu_state.log').write_text(raw,encoding='utf-8')
+                    states=parse_onu_state(raw)
+                finally:client.close()
+                rows,mapping,errors=verify_mapping(ips,states)
+                (logger_folder/'mapping_check.json').write_text(
+                    __import__('json').dumps({'rows':rows,'errors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
+                logger.info('MAPPING_FINISHED|IPS=%s|MATCH=%s|ERRORS=%s',len(ips),len(mapping),len(errors))
+                self.messages.put(('MAPPING_DONE',{'rows':rows,'mapping':mapping,'errors':errors,'snapshot':snapshot}))
+            except Exception as exc:
+                logger.exception('MAPPING_ERROR')
+                self.messages.put(('MAPPING_DONE',{'rows':[],'mapping':{},'errors':[str(exc)],'snapshot':snapshot}))
+            finally:
+                for h in list(logger.handlers):h.close();logger.removeHandler(h)
+        threading.Thread(target=worker,daemon=True).start()
+
     def refresh(self):
+        self.invalidate_mapping()
         ports=available_ports()
         self.options={f'{dev} — {desc}':dev for dev,desc,_ in ports}
         self.combo['values']=list(self.options)
@@ -303,6 +380,10 @@ class GUI:
         port=self.options.get(self.port_var.get(),'')
         if not valid_port(port):
             messagebox.showerror('COM Port','Choose a valid COM port first');return
+        if not self.verified_mapping or self.verified_snapshot != self.mapping_snapshot():
+            self.invalidate_mapping()
+            messagebox.showerror('Mapping','Verify IP / MAC / GPON SN before Start.');return
+        mapping={k:dict(v) for k,v in self.verified_mapping.items()}
         loop=self.mode.get()=='loop'
         try:
             interval=float(self.interval_var.get()) if loop else 5.0
@@ -319,6 +400,7 @@ class GUI:
         self.running=True
         self.stop_flag.clear()
         self.start_btn.configure(state='disabled')
+        self.verify_btn.configure(state='disabled')
         self.stop_btn.configure(state='normal')
         self.combo.configure(state='disabled')
         self.refresh_button.configure(state='disabled')
@@ -336,7 +418,7 @@ class GUI:
                 factory=lambda: SerialLogin(port,logger,self.stop_flag,
                                               on_stage=lambda stage:self.messages.put(('stage',stage)))
                 run_session(factory,folder,logger,self.stop_flag,loop=loop,
-                            interval_min=interval,duration_hr=duration,notify=notify)
+                            interval_min=interval,duration_hr=duration,notify=notify,mapping=mapping)
             except Exception as exc:
                 logger.exception('SESSION_ERROR')
                 self.messages.put(('DONE',{'status':'ERROR: '+str(exc),'cycles':0,
@@ -387,9 +469,30 @@ class GUI:
                 elif kind=='SAVE ERROR':
                     self.state.set('SAVE ERROR — see execution.log')
                     self.display(msg)
+                elif kind=='MAPPING_DONE':
+                    self.running=False
+                    self.verify_btn.configure(state='normal')
+                    self.combo.configure(state='readonly')
+                    self.refresh_button.configure(state='normal')
+                    for existing in self.map_tree.get_children():self.map_tree.delete(existing)
+                    for row in msg['rows']:
+                        self.map_tree.insert('', 'end', values=(row['ip'],row['mac'],row['onu_id'] or '',
+                                             row['gpon_sn'],row['ping'],row['status']))
+                    if not msg['errors'] and self.mapping_snapshot()==msg['snapshot']:
+                        self.verified_mapping=msg['mapping']
+                        self.verified_snapshot=msg['snapshot']
+                        self.mapping_label.set(f'VERIFIED — {len(msg["mapping"])} DUT / ONU')
+                        self.start_btn.configure(state='normal')
+                        self.state.set('MAPPING VERIFIED — ready for Start')
+                    else:
+                        self.invalidate_mapping()
+                        self.state.set('MAPPING FAILED — '+ '; '.join(msg['errors'][:3]))
+                        self.display(self.state.get())
+                    self.update_mode()
                 elif kind=='DONE':
                     self.running=False
-                    self.start_btn.configure(state='normal')
+                    self.invalidate_mapping()  # Every new run requires fresh pre-run mapping.
+                    self.verify_btn.configure(state='normal')
                     self.stop_btn.configure(state='disabled')
                     self.combo.configure(state='readonly')
                     self.refresh_button.configure(state='normal')

@@ -1,45 +1,34 @@
-# V3600GS Connect V1.0.12 — ONU Run-in
+# V3600GS Connect V1.0.13 — ONU Run-in + IP Mapping + Parallel Ping
 
-Windows 11 / EXE with direct serial (no Tera Term Macro, no local Python required).
+Windows 11 GUI, one EXE, no Python installation required at the factory.
 
-## Features
-- Auto-discover USB-Enhanced-SERIAL COM device. 115200 baud, 8N1, no flow control.
-- Four-stage OLT login (known compatible V1.0.8 direct-serial sequence), fixed GPON 0/1.
-- Three commands per cycle: `show onu state`, `show onu time-stamp`, `show onu optical-info all`.
-- `Phase State=working` -> ONU PASS; any other observed phase -> FAIL; no state -> UNKNOWN/ERROR, never PASS.
-- ONU GPON SN, Admin/OMCC/Phase, Channel, timestamps and optical information recorded.
-- Single Check and Loop Check (interval in minutes, duration in hours; 0=until Stop).
-- One session folder per Start; one `ONU_Master_Record.xlsx` updated after every cycle.
-- Dynamic ONU IDs (including sparse IDs and 10–16+ devices), fixed by ID across all cycles.
-- Raw CLI per cycle; `cycles.jsonl` durable recovery journal; execution.log, status.txt, events.jsonl.
-- Excel contains `01_Loop_Summary` (one row per cycle), `02_ONU_Detail`, `03_Field_Notes`, `04_Event_Log`.
-- Session tries to reconnect on Serial failure in subsequent cycle, never reuses prior cycle's values.
+## Verified architecture
+- Direct Serial COM (`USB-Enhanced-SERIAL`, 115200 / 8N1), **no Tera Term Macro**.
+- Original four-stage login and three GPON 0/1 queries retained from V1.0.12.
+- Pre-Run Verify matches **DUT IPv4 → Windows ARP MAC suffix (last 6 hex) → ONU GPON SN suffix**. Exact IP/MAC/GPON SN mapping must be unambiguous and cover every discovered ONU and configured IP before Start is enabled.
+- Verify sends **one warmup Ping** per IP to populate ARP, and requires the IP to be reachable. If MAC cannot be obtained, check L2 topology / PC adapter / IP / DUT. Never assume the MAC of the default gateway is the DUT MAC.
+- Every Single/Loop cycle executes `show onu state`, `show onu time-stamp`, `show onu optical-info all`, concurrently with **4 Ping packets per mapped IP**, in parallel across IPs (up to 16 concurrent workers).
+- Ping criteria: lost 0/4 = PASS; 1/4 = WARNING; 2–4/4 = FAIL; unsuccessful Ping execution = ERROR. An observed ONU Phase State other than `working` = ONU FAIL. Missing/invalid data is never PASS.
+- Dynamic ONU IDs, stable across cycles; never reassign mapping on ONU Offline/Recovery.
+- Every Run Session has one `ONU_Master_Record.xlsx`, appended by full workbook regeneration from `cycles.jsonl`; one cycle row, no new Excel each cycle. JSONL is primary recovery record.
+- Each ONU only adds **IP PING Result** / **PING Loss** in the main and detail Excel pages. Removed: Admin State, OMCC State, Data Flag, Alarm, Response. Raw CLI remains available.
+- Separate `03_IP_Mapping`, `04_Event_Log` and `05_Field_Notes` sheets. `raw_ping` and `raw_cli` logs retained.
+- Upon completion or stop, pre-run mapping is cleared; new Start requires verification again.
 
-## Workflow / scope
-1. Close Tera Term if it uses the selected COM.
-2. Start EXE, choose COM, Single or Loop.
-3. For Loop set interval (e.g. 5 minutes), duration (e.g. 72 hours; 0 until manually stopped).
-4. Start ONU Check. First cycle runs immediately. Monitor completed cycles and status.
-5. Use Stop to end the run. Outputs remain beside the EXE in `records/Run_.../`.
-6. Open Records Folder / Open Excel once the run ends.
+## GitHub Actions
+Upload the **contents** of Clean ZIP to repository root, including `.github/workflows/build.yml`, and trigger `Build V3600GS Connect`. Artifact `V3600GS_Connect_V1.0.13` contains the EXE.
 
-This version **does not implement Ping yet**; Ping is a separate upcoming feature.
-An ONU PASS means *observed working phase*, not an optical compliance pass.
+## Factory setup
+1. Connect a Windows 11 PC to the local LAN of DUT IPs, and Serial to the V3600GS. Close Tera Term (it must not hold the COM port).
+2. Start `V3600GS_Connect_V1.0.13.exe`. Confirm COM / Serial configuration.
+3. Enter DUT IPv4 addresses (one per line) and click **Verify IP / MAC / GPON SN Mapping**.
+4. Review table: only all `MATCH` enables Start; failures require network or DUT investigation. Verification stores logs under `records/Mapping_...`.
+5. Choose Single Check or Loop, enter interval (min) and duration (hours; `0` until Stop), then click **Start ONU Check**.
+6. Watch cycle count and state; Stop retains completed records. Excel under `records/Run_.../ONU_Master_Record.xlsx`.
+7. Do **not** leave the workbook open in Excel during testing: Excel may lock the file. Rebuild from `cycles.jsonl` on a development PC using `rebuild_excel.py` if a save fails.
 
-## Build
-Upload all GitHub ZIP contents to repository root, including `.github/workflows/build.yml`.
-In Actions select `Build V3600GS Connect` -> `Run workflow`. Download
-`V3600GS_Connect_V1.0.12` artifact containing an EXE. It embeds pyserial.
-
-## Notes / safety
-- Source and bundled program contain configured factory credentials; restrict repository access.
-- Duration counts from start of session, not total on-test-time after retries. No overlapping cycles.
-- Every cycle is first saved in `cycles.jsonl` and then Excel is safely rewritten.
-- Close Excel during run: Windows may lock it, preventing updates. JSONL remains recoverable.
-- If Excel is locked, close Excel and restart the app for a fresh session; use the included
-  `rebuild_excel.py` (Python development environment) to rebuild an older session from JSONL.
-- Host clock is used for Check Time. Ensure PC time is correct.
-
-## Verification limits
-Automated tests validate parsing, simulated Serial, Excel XML, state transitions, retry,
-Stop and packaging. GitHub Windows build and physical 16-ONU / long-duration run require user-side testing.
+## Limits / cautions
+- Pre-run MAC discovery uses Windows `arp -a <IP>`; it is valid only for DUTs reachable at layer 2 and only when the Ping-facing interface MAC actually shares the suffix with GPON SN. Unmatched units are blocked; no manual bypass.
+- Device IP or COM changes invalidate verification.
+- Optical values are **Record Only** until limits/units are approved.
+- Windows EXE build and physical 10–16 DUT Ping run have **not** been exercised in the authoring environment. Python 3.13 offline unit tests do not substitute for actual Windows hardware validation.

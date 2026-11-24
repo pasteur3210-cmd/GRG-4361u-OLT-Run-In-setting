@@ -74,7 +74,7 @@ class ONUDataTests(unittest.TestCase):
         b={1:{'data_flag':'OK','rx':-23},16:{'data_flag':'OK','rx':-27}}
         rows=build_rows([{'time':'t1','onus':a},{'time':'t2','onus':b}])[0][1]
         headers=rows[0]
-        self.assertEqual(rows[2][headers.index('ONU2_Data Flag')],'MISSING THIS CYCLE')
+        self.assertEqual(rows[2][headers.index('ONU2_ONU Result')],'UNKNOWN')
         self.assertIsNone(rows[2][headers.index('ONU2_ONU Rx')])
         self.assertEqual(rows[2][headers.index('ONU16_ONU Rx')],-27)
         self.assertEqual(rows[2][2],'INCOMPLETE')

@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from onu_parser import parse_onu_state, parse_time_stamp, parse_optical, merge_state_data
 from excel_record import export_cycles
+from ping_mapping import ping_all
+import concurrent.futures
 
 COMMANDS = [('show onu state', 'onu_state'),
             ('show onu time-stamp', 'onu_time_stamp'),
@@ -40,7 +42,19 @@ def append_journal(folder, cycle):
 
 def rebuild_excel(folder):
     folder=Path(folder)
-    return export_cycles(folder/'ONU_Master_Record.xlsx',read_journal(folder))
+    return export_cycles(folder/'ONU_Master_Record.xlsx',read_journal(folder), mapping=read_mapping(folder))
+
+
+def read_mapping(folder):
+    path=Path(folder)/'mapping.json'
+    if not path.exists():return {}
+    data=json.loads(path.read_text(encoding='utf-8'))
+    return {int(k):v for k,v in data.items()}
+
+
+def save_mapping(folder, mapping):
+    folder=Path(folder);folder.mkdir(parents=True,exist_ok=True)
+    (folder/'mapping.json').write_text(json.dumps(mapping,ensure_ascii=False,indent=2),encoding='utf-8')
 
 
 def check_cycle(client, folder, number, logger):
@@ -81,9 +95,12 @@ def check_cycle(client, folder, number, logger):
     return units, '; '.join(errors)
 
 
-def cycle_result(units,error, roster):
+def cycle_result(units,error, roster, ping_results=None, mapping=None):
     if not units or not any(u.get('phase_state') for u in units.values()): return 'ERROR'
     if any(u.get('status')=='FAIL' for u in units.values()): return 'FAIL'
+    if ping_results is not None and any(x.get('result')=='FAIL' for x in ping_results.values()): return 'FAIL'
+    if ping_results is not None and (len(ping_results)!=len(mapping or {}) or any(x.get('result')=='ERROR' for x in ping_results.values())): return 'INCOMPLETE'
+    if mapping and (set(units)!=set(mapping) or any(i not in units or units[i].get('gpon_sn','').lower()!=data['gpon_sn'].lower() for i,data in mapping.items())):return 'INCOMPLETE'
     if error or any(i not in units for i in roster) or any(
         u.get('status')!='PASS' or u.get('data_flag')!='OK' for u in units.values()
     ): return 'INCOMPLETE'
@@ -91,7 +108,8 @@ def cycle_result(units,error, roster):
 
 
 def run_session(client_factory, folder, logger, stop_event, *, loop=False,
-                interval_min=5.0, duration_hr=72.0, notify=None, clock=None):
+                interval_min=5.0, duration_hr=72.0, notify=None, clock=None,
+                mapping=None, ping_fn=None):
     """One run -> one folder, one XLSX; errors journaled and retry next cycle.
 
     ``interval_min`` is measured between planned cycle starts; if checks are
@@ -107,9 +125,13 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
     next_start=start
     cutoff=(start+duration_hr*3600) if loop and duration_hr>0 else None
     client=None
+    mapping=mapping or {}
+    if mapping:
+        save_mapping(folder,mapping)
     cycles=[]
     roster=set()
     last_phases={}
+    last_pings={}
     status='COMPLETED'
     try:
         while True:
@@ -124,7 +146,11 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             number=len(cycles)+1
             check_time=dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             notify('CHECKING',f'Cycle {number} checking ONU...')
-            units={};err=''
+            units={};err='';ping_results={}
+            # Start Ping in parallel with Serial ONU CLI; only one Serial caller.
+            ping_pool=concurrent.futures.ThreadPoolExecutor(max_workers=1) if mapping else None
+            ping_future=(ping_pool.submit(ping_all,[m['ip'] for m in mapping.values()],ping_fn=ping_fn)
+                         if ping_pool else None)
             try:
                 if client is None:
                     client=client_factory()
@@ -139,13 +165,29 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                 logger.exception('CYCLE_ERROR|%s|%s',number,err)
                 if client is not None:
                     client.close();client=None
+            if ping_future:
+                try:
+                    by_ip=ping_future.result()
+                    ping_results={str(onu): {k:v for k,v in by_ip[entry['ip']].items() if k!='raw'}
+                                  for onu,entry in mapping.items()}
+                    rawping=folder/'raw_ping'
+                    rawping.mkdir(parents=True,exist_ok=True)
+                    for onu,entry in mapping.items():
+                        (rawping/f'Loop_{number:04d}_ONU{onu}.log').write_text(
+                            by_ip[entry['ip']].get('raw',''),encoding='utf-8')
+                except Exception as exc:
+                    logger.exception('PING_ERROR|CYCLE=%s',number)
+                    err+='; '+str(exc)
+                finally:
+                    ping_pool.shutdown(wait=True)
             if stop_event.is_set():
                 status='STOPPED BY USER'
                 logger.info('STOP_REQUESTED_DURING_CYCLE|%s',number)
                 break
             roster.update(units)
-            result=cycle_result(units,err,roster)
-            cycle={'cycle':number,'time':check_time,'onus':units,'error':err,'result':result}
+            result=cycle_result(units,err,roster,ping_results if mapping else None,mapping)
+            cycle={'cycle':number,'time':check_time,'onus':units,'error':err,'result':result,
+                   'ping':ping_results}
             # Journal is written before the spreadsheet to prevent data loss.
             append_journal(folder,cycle)
             cycles.append(cycle)
@@ -165,6 +207,16 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                            'gpon_sn':item.get('gpon_sn',''), 'previous':prior,'current':phase}
                     events.append(event)
                 last_phases[onu]=phase
+            for onu_key, result_entry in sorted(ping_results.items(),key=lambda x:int(x[0])):
+                onu=int(onu_key)
+                current=result_entry.get('result','ERROR')
+                previous=last_pings.get(onu)
+                if (previous is None and current in ('FAIL','ERROR')) or (previous is not None and current!=previous):
+                    events.append({'time':check_time,'cycle':number,'onu_id':onu,
+                                   'gpon_sn':mapping.get(onu,{}).get('gpon_sn',''),
+                                   'previous':previous or 'NOT OBSERVED','current':current,
+                                   'kind':'PING'})
+                last_pings[onu]=current
             if events:
                 with (folder/'events.jsonl').open('a',encoding='utf-8') as ef:
                     for event in events:ef.write(json.dumps(event,ensure_ascii=False)+'\n')

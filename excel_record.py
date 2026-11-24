@@ -12,12 +12,12 @@ from zipfile import ZipFile, ZIP_DEFLATED
 from xml.sax.saxutils import escape
 
 FIELDS = [('status','ONU Result'), ('gpon_sn','GPON SN'), ('phase_state','Phase State'),
-          ('admin_state','Admin State'), ('omcc_state','OMCC State'), ('channel','Channel'), ('data_flag','Data Flag'), ('port_id','PON/ONU'),
+          ('channel','Channel'), ('port_id','PON/ONU'),
           ('last_regist','Last Regist'), ('last_deregist','Last Deregist'),
           ('dereg_reason','Dereg Reason'), ('alive','Alive Time'),
           ('rx','ONU Rx'), ('tx','ONU Tx'), ('voltage','Voltage(V)'),
           ('current','Bias(mA)'), ('temperature','Temp(C)'),
-          ('response','Response'), ('alarm','Alarm')]
+          ('ping_result','IP PING Result'), ('ping_loss','PING Loss')]
 BASE_HEADERS = ['Cycle','Check Time','Overall Result','ONU Count','Cycle Error']
 
 
@@ -79,14 +79,15 @@ def xlsx_bytes(sheets):
     return buf.getvalue()
 
 
-def build_rows(cycles, expected_onu_ids=None):
+def build_rows(cycles, expected_onu_ids=None, mapping=None):
     """Create one summary row per cycle; stable columns keyed by actual ONU ID.
 
     All ONU IDs across the input cycles share a fixed column mapping. A missing
     ONU is recorded as MISSING THIS CYCLE, not silently shifted or marked offline.
     Sparse IDs (e.g. 1, 3, 16) do not allocate fake ONU 2..15 columns.
     """
-    known_ids = set(expected_onu_ids or [])
+    mapping=mapping or {}
+    known_ids = set(expected_onu_ids or []) | set(mapping)
     for cycle in cycles:
         known_ids.update(cycle['onus'])
     if any(not isinstance(onu, int) or isinstance(onu, bool) or onu <= 0 for onu in known_ids):
@@ -119,11 +120,16 @@ def build_rows(cycles, expected_onu_ids=None):
         for onu in ids:
             if onu in units:
                 item = units[onu]
-                row.extend(item.get(k) for k, _ in FIELDS)
-                detail.append([cycle.get('cycle', i), ts, onu] + [item.get(k) for k, _ in FIELDS])
+                pr=cycle.get('ping',{}).get(str(onu),{})
+                vals=[pr.get('result','NOT CONFIGURED') if k=='ping_result' else
+                      (str(pr['loss'])+'/4' if pr.get('loss') is not None else 'N/A') if k=='ping_loss' else
+                      item.get(k) for k,_ in FIELDS]
+                row.extend(vals)
+                detail.append([cycle.get('cycle', i), ts, onu] + vals)
             else:
                 row.extend(('UNKNOWN' if k == 'status' else
-                            'MISSING THIS CYCLE' if k == 'data_flag' else None)
+                            cycle.get('ping',{}).get(str(onu),{}).get('result','NOT CONFIGURED') if k == 'ping_result' else
+                            str(cycle.get('ping',{}).get(str(onu),{}).get('loss'))+'/4' if k=='ping_loss' and cycle.get('ping',{}).get(str(onu),{}).get('loss') is not None else None)
                            for k, _ in FIELDS)
         summary.append(row)
     event_rows = [['Cycle','Check Time','ONU ID','GPON SN','Previous Phase','Current Phase','Event']]
@@ -142,20 +148,34 @@ def build_rows(cycles, expected_onu_ids=None):
                 event_rows.append([cycle.get('cycle',i),cycle['time'],onu,item.get('gpon_sn'),
                                    before,current,'RECOVERY' if current.lower()=='working' else 'STATE CHANGE'])
             previous[onu]=current
+    mapping_rows=[['ONU ID','GPON SN','DUT IP','MAC Address','Pre-Run Mapping']]
+    for onu,entry in sorted(mapping.items()):
+        mapping_rows.append([onu,entry['gpon_sn'],entry['ip'],entry['mac'],'MATCH'])
+    last_ping={}
+    for i,cycle in enumerate(cycles,1):
+        for onu_key, p in sorted(cycle.get('ping',{}).items(),key=lambda kv:int(kv[0])):
+            onu=int(onu_key)
+            current=p.get('result','ERROR')
+            prev=last_ping.get(onu)
+            if (prev is None and current in ('FAIL','ERROR')) or (prev is not None and prev!=current):
+                event_rows.append([cycle.get('cycle',i),cycle['time'],onu,
+                                   mapping.get(onu,{}).get('gpon_sn',''),prev or 'NOT OBSERVED',current,
+                                   'PING RECOVERY' if current=='PASS' else 'PING STATUS CHANGE'])
+            last_ping[onu]=current
     notes = [['Field', 'Explanation'],
              ['ONU columns', 'Automatically based on all actual ONU IDs; no 10/16 ONU hard limit'],
              ['Missing This Cycle', 'ONU ID not returned this cycle; NOT equivalent to Offline'],
              ['Status', 'PASS if Phase State working; FAIL for other observed states; UNKNOWN for missing state'],
-             ['Data Flag', 'OK if state, timestamp and optical all have ONU row; missing fields remain visible'],
+             ['Ping Result', 'PASS 0/4 lost; WARNING 1/4; FAIL >=2/4; ERROR cannot determine loss'],
              ['N/A', 'Device returned N/A; do not interpret as PASS'],
              ['Units', 'Rx/Tx are raw CLI values; confirm dBm with product specification'],
              ['Source', 'show onu state + show onu time-stamp + show onu optical-info all']]
-    return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_Field_Notes', notes), ('04_Event_Log', event_rows)]
+    return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_IP_Mapping', mapping_rows), ('04_Event_Log', event_rows), ('05_Field_Notes', notes)]
 
-def export_cycles(path: Path, cycles: list[dict]):
+def export_cycles(path: Path, cycles: list[dict], mapping=None):
     path=Path(path)
     path.parent.mkdir(parents=True,exist_ok=True)
-    data=xlsx_bytes(build_rows(cycles))
+    data=xlsx_bytes(build_rows(cycles, mapping=mapping))
     fd,tmp=tempfile.mkstemp(suffix='.xlsx',dir=str(path.parent))
     try:
         with os.fdopen(fd,'wb') as fp:fp.write(data)

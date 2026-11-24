@@ -21,13 +21,65 @@ FIELDS = {
 }
 
 
+def normalize_terminal_output(raw: str) -> str:
+    """Reconstruct Tera Term-style cursor-positioned serial output.
+
+    V3600GS uses CR + ESC[nC to place each time-stamp column at an
+    absolute screen column. Splitting on CR before rendering loses rows.
+    Render a minimal terminal line: CR resets cursor, ESC[nC moves right,
+    LF commits the line. Unknown formatting CSI sequences are ignored.
+    """
+    lines = []
+    cells = []
+    cursor = 0
+    i = 0
+    def flush():
+        nonlocal cells, cursor
+        lines.append(''.join(cells).rstrip())
+        cells = []
+        cursor = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch == '\x1b' and i+1 < len(raw) and raw[i+1] == '[':
+            m = re.match(r'\x1b\[([0-9;?]*)([@-~])', raw[i:])
+            if m:
+                args, op = m.groups()
+                count = int(args.split(';')[0]) if args and args.split(';')[0].isdigit() else 1
+                if op == 'C':
+                    cursor += min(count, 10000)
+                elif op == 'D':
+                    cursor = max(0, cursor-min(count,10000))
+                elif op == 'G':
+                    cursor = max(0, count-1)
+                i += len(m.group(0))
+                continue
+        if ch == '\r':
+            cursor = 0
+        elif ch == '\n':
+            flush()
+        elif ch == '\b':
+            cursor = max(0,cursor-1)
+        elif ch == '\t':
+            cursor = (cursor//8+1)*8
+        elif ch.isprintable() and ch != '\x7f':
+            if cursor < 100000:
+                if len(cells) <= cursor:
+                    cells.extend(' '*(cursor+1-len(cells)))
+                cells[cursor] = ch
+                cursor += 1
+        i += 1
+    if cells:
+        flush()
+    return '\n'.join(lines)
+
+
 def parse_time_stamp(output: str) -> dict[int, dict]:
     """Handle whitespace-separated AND vendor logs with merged columns.
 
     Example: 1/12026:11:23 16:47:05N/AN/A20:52:29
     """
     items = {}
-    for line in output.replace('\x00', '').splitlines():
+    for line in normalize_terminal_output(output.replace('\x00', '')).splitlines():
         line = line.strip()
         match = TIME_ROW.match(line)
         if not match:

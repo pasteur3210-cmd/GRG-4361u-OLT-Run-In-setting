@@ -18,7 +18,7 @@ from onu_parser import parse_time_stamp, parse_optical, merge_data
 from excel_record import export_cycles
 from serial.tools import list_ports
 
-VERSION = "1.0.10"
+VERSION = "1.0.11"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200

@@ -110,3 +110,37 @@ class ONUDataTests(unittest.TestCase):
             self.assertTrue(fake.closed)
 
 if __name__=='__main__':unittest.main()
+
+class RawSerialRegression(unittest.TestCase):
+    def test_exact_failed_ansi_serial_log(self):
+        raw=(DATA/'serial_time_stamp_ansi.log').read_bytes().decode('utf-8')
+        rows=parse_time_stamp(raw)
+        self.assertEqual(set(rows),{1,2})
+        self.assertEqual(rows[1]['port_id'],'1/1')
+        self.assertEqual(rows[1]['last_regist'],'2026:11:23 16:47:05')
+        self.assertEqual(rows[1]['last_deregist'],'N/A')
+        self.assertEqual(rows[1]['dereg_reason'],'N/A')
+        self.assertEqual(rows[1]['alive'],'21:13:45')
+        self.assertEqual(rows[2]['alive'],'21:13:02')
+    def test_real_raw_two_commands_to_excel(self):
+        tm=(DATA/'serial_time_stamp_ansi.log').read_bytes().decode('utf-8')
+        op=(DATA/'serial_optical_ansi.log').read_bytes().decode('utf-8')
+        combined=merge_data(parse_time_stamp(tm),parse_optical(op))
+        self.assertEqual(set(combined),{1,2})
+        self.assertEqual(combined[1]['rx'],-26.99)
+        self.assertEqual(combined[2]['temperature'],37.586)
+        self.assertTrue(all(item['data_flag']=='OK' for item in combined.values()))
+        with tempfile.TemporaryDirectory() as td:
+            path=export_cycles(Path(td)/'ONU_Check_Record.xlsx',[{'time':'2026-11-24 14:00:24','onus':combined}])
+            with ZipFile(path) as z:
+                self.assertIsNone(z.testzip())
+                body=z.read('xl/worksheets/sheet1.xml')
+                ET.fromstring(body)
+                self.assertIn(b'21:13:45',body)
+                self.assertIn(b'-26.99',body)
+    def test_ansi_cursor_columns_and_chunk_text(self):
+        from onu_parser import normalize_terminal_output
+        raw='1/3\r\x1b[11C2026:11:23 16:47:05\r\x1b[35CN/A\r\x1b[60CN/A\r\x1b[85C20:00:00\r\n'
+        result=normalize_terminal_output(raw)
+        self.assertIn('1/3        2026:',result)
+        self.assertEqual(parse_time_stamp(raw)[3]['alive'],'20:00:00')

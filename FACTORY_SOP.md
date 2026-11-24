@@ -1,4 +1,4 @@
-# FACTORY SOP — V3600GS Connect V1.0.14
+# FACTORY SOP — V3600GS Connect V1.0.15
 
 1. Close Tera Term. Connect OLT console cable and local DUT LAN to the test PC.
 2. Run EXE (no local Python needed). Select detected `USB-Enhanced-SERIAL` COM port; serial is 115200 / 8N1.
@@ -12,8 +12,8 @@
 
 **Engineering warning:** A successful Ping/IP pairing depends on the Windows ARP MAC representing the actual DUT interface. These are DUT-side network checks, not proof of ONU optical compliance.
 
-## V1.0.14 Mapping check
+## V1.0.15 Mapping check
 - Before starting, enter the actual IPs and select Verify Mapping.
-- GUI shows ARP **WAN MAC**, computed **LAN MAC (-1)**, matching ONU ID and GPON SN.
+- GUI shows observed **ARP MAC**, verified **LAN MAC**, **Match Type** (DIRECT or OFFSET_MINUS_1), ONU ID and GPON SN.
 - Real example: 192.168.2.121 WAN 3872C0112256 -> LAN 3872C0112255 -> ONU 1; 192.168.2.122 WAN 1C6499ABE12A -> LAN 1C6499ABE129 -> ONU 2.
 - Mapping FAIL blocks Start; check IP/MAC/L2 topology. No manual force-PASS.

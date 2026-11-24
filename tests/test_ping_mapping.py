@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from zipfile import ZipFile
 from onu_parser import parse_onu_state
-from ping_mapping import (normalize_ips,suffix,find_mac,wan_to_lan_mac,run_ping,ping_all,verify_mapping)
+from ping_mapping import (normalize_ips,suffix,find_mac,wan_to_lan_mac,match_mac_to_onu,run_ping,ping_all,verify_mapping)
 from excel_record import FIELDS,build_rows
 from session_runner import run_session, read_journal
 
@@ -48,24 +48,27 @@ class PingTests(unittest.TestCase):
         self.assertEqual(errors,[])
         self.assertEqual([r['status'] for r in rows],['MATCH','MATCH'])
         self.assertEqual(matched[1]['lan_mac'],'3872C0112255')
+        self.assertEqual(matched[1]['match_type'],'OFFSET_MINUS_1')
         self.assertEqual(matched[2]['lan_mac'],'1C6499ABE129')
         self.assertEqual(matched[1]['ip'],ips[0])
         self.assertEqual(matched[2]['ip'],ips[1])
 
-    def test_wrong_wan_suffix_not_assigned(self):
+    def test_direct_mac_matches_without_decrement(self):
         rows,matched,errors=verify_mapping([IP1],{1:S[1]},ping_fn=good_ping,
                         arp_fn=lambda ip:'3872C0112255')
-        self.assertEqual(rows[0]['status'],'MISMATCH')
-        self.assertFalse(matched)
-        self.assertTrue(errors)
+        self.assertEqual(errors,[])
+        self.assertEqual(rows[0]['status'],'MATCH')
+        self.assertEqual(matched[1]['lan_mac'],'3872C0112255')
+        self.assertEqual(matched[1]['match_type'],'DIRECT')
+
 
     def test_16_dynamic_mac_pairs(self):
         states={i:dict(gpon_sn='CMTD'+format(0x10000000+i,'08X')) for i in range(1,17)}
         ips=[f'192.168.2.{100+i}' for i in range(1,17)]
-        arp={ip:f'{0x3872C0000000 + i + 1:012X}' for i,ip in enumerate(ips,1)}
+        arp={ip:f'{0x3872C0000000 + i*4 + 1:012X}' for i,ip in enumerate(ips,1)}
         # Adjust SN trailing six bytes to derived LAN (full 48-bit counter).
         for i in range(1,17):
-            states[i]['gpon_sn']='CMTD'+format(0xC0000000+i,'08X')
+            states[i]['gpon_sn']='CMTD'+format(0xC0000000+i*4,'08X')
         rows,matched,errors=verify_mapping(ips,states,ping_fn=good_ping,arp_fn=arp.__getitem__)
         self.assertEqual(errors,[])
         self.assertEqual(len(matched),16)
@@ -184,3 +187,65 @@ class AdditionalRegression(unittest.TestCase):
         mapping={1:{'ip':IP1,'mac':'AABBCC112256','gpon_sn':S[1]['gpon_sn']}}
         event_sheet=build_rows(cycles,mapping=mapping)[3][1]
         self.assertTrue(any('PING RECOVERY' in row for row in event_sheet))
+
+
+class DualMacRuleRegression(unittest.TestCase):
+    def test_two_actual_arp_formats_both_accepted(self):
+        cases=[('3872C0112255','DIRECT','3872C0112255',1),
+               ('3872C0112256','OFFSET_MINUS_1','3872C0112255',1),
+               ('1C6499ABE129','DIRECT','1C6499ABE129',2),
+               ('1C6499ABE12A','OFFSET_MINUS_1','1C6499ABE129',2)]
+        for mac,kind,lan,onu in cases:
+            with self.subTest(mac=mac):
+                _,matched,errors=verify_mapping([IP1],{onu:S[onu]},ping_fn=good_ping,arp_fn=lambda ip:mac)
+                self.assertEqual(errors,[])
+                self.assertEqual(matched[onu]['match_type'],kind)
+                self.assertEqual(matched[onu]['lan_mac'],lan)
+
+    def test_invalid_direct_and_offset_mismatch(self):
+        _,matched,errors=verify_mapping([IP1],{1:S[1]},ping_fn=good_ping,arp_fn=lambda ip:'3872C0112257')
+        self.assertFalse(matched)
+        self.assertTrue(errors)
+
+    def test_direct_and_offset_match_different_onus_is_ambiguous(self):
+        states={1:dict(gpon_sn='CMTD00112255'),2:dict(gpon_sn='CMTD00112256')}
+        rows,matched,errors=verify_mapping([IP1],states,ping_fn=good_ping,arp_fn=lambda ip:'3872C0112256')
+        self.assertEqual(rows[0]['status'],'AMBIGUOUS')
+        self.assertFalse(matched)
+        self.assertTrue(errors)
+
+    def test_borrow_offset(self):
+        states={1:dict(gpon_sn='CMTD001122FF')}
+        rows,matched,errors=verify_mapping([IP1],states,ping_fn=good_ping,arp_fn=lambda ip:'3872C0112300')
+        self.assertEqual(errors,[])
+        self.assertEqual(matched[1]['lan_mac'],'3872C01122FF')
+
+    def test_duplicate_different_arp_mac_same_onu_blocked(self):
+        ips=[IP1,IP2]
+        macs={IP1:'3872C0112255',IP2:'3872C0112256'}
+        rows,matched,errors=verify_mapping(ips,{1:S[1]},ping_fn=good_ping,arp_fn=macs.__getitem__)
+        self.assertEqual(len(matched),1)
+        self.assertEqual(rows[1]['status'],'DUPLICATE ONU')
+        self.assertTrue(errors)
+
+    def test_direct_16_units(self):
+        states={i:{'gpon_sn':f'CMTD{0xC0000000+i*4:08X}'} for i in range(1,17)}
+        ips=[f'192.168.2.{100+i}' for i in range(1,17)]
+        macs={ip:f'{0x3872C0000000+i*4:012X}' for i,ip in enumerate(ips,1)}
+        rows,matched,errors=verify_mapping(ips,states,ping_fn=good_ping,arp_fn=macs.__getitem__)
+        self.assertFalse(errors)
+        self.assertEqual(len(matched),16)
+        self.assertTrue(all(r['match_type']=='DIRECT' for r in rows))
+
+    def test_mapping_excel_has_method_column(self):
+        from excel_record import build_rows
+        mapping={1:{'gpon_sn':S[1]['gpon_sn'],'ip':IP1,'mac':'3872C0112255','lan_mac':'3872C0112255','match_type':'DIRECT'}}
+        sheet=dict(build_rows([],mapping=mapping))['03_IP_Mapping']
+        self.assertIn('Match Type',sheet[0])
+        self.assertEqual(sheet[1][sheet[0].index('Match Type')],'DIRECT')
+
+    def test_arp_zero_not_accepted_even_if_suffix_matches(self):
+        states={1:{'gpon_sn':'CMTD00000000'}}
+        rows,matched,errors=verify_mapping([IP1],states,ping_fn=good_ping,arp_fn=lambda ip:'000000000000')
+        self.assertFalse(matched)
+        self.assertEqual(rows[0]['status'],'INVALID ARP MAC')

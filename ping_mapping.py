@@ -1,7 +1,8 @@
 """Windows IPv4 Ping and strict IP<->ARP MAC<->GPON SN association.
 
-ARP neighbor entries are treated as WAN MAC; WAN MAC minus one yields
-LAN MAC, whose last 6 hexadecimal characters must uniquely match a discovered ONU's GPON SN suffix. No index/order pairing.
+ARP neighbor entries may be the LAN MAC itself OR the WAN MAC (LAN+1).
+Accept a unique ONU match by direct six-digit suffix or by full 48-bit MAC minus one.
+Never subtract one for a direct match. Never guess an ambiguous pairing.
 """
 from __future__ import annotations
 import concurrent.futures
@@ -59,6 +60,45 @@ def wan_to_lan_mac(wan_mac):
         raise ValueError('Invalid/reserved WAN MAC')
     return f'{value - 1:012X}'
 
+
+
+def canonical_mac(mac):
+    """Validate an observed 48-bit ARP MAC; reject zero and broadcast."""
+    value = re.sub(r'[:-]', '', str(mac or '')).upper()
+    if not re.fullmatch(r'[0-9A-F]{12}', value) or value in ('0'*12, 'F'*12):
+        raise ValueError('Invalid ARP MAC')
+    return value
+
+
+def match_mac_to_onu(mac, suffix_to_onus):
+    """Unique match of observed MAC or observed MAC - 1; ambiguity blocks matching.
+
+    Returns (ONU ID or None, accepted LAN MAC, match type, status).
+    A GPON suffix matching two different ONUs is always AMBIGUOUS.
+    """
+    try:
+        direct = canonical_mac(mac)
+    except ValueError:
+        return None, '', '', 'INVALID ARP MAC'
+    candidates = []
+    for match_type, lan_mac in [('DIRECT', direct)]:
+        for onu in suffix_to_onus.get(suffix(lan_mac), []):
+            candidates.append((onu,lan_mac,match_type))
+    # Underflow makes -1 invalid, but direct matching remains permitted.
+    try:
+        decrement = wan_to_lan_mac(direct)
+    except ValueError:
+        decrement = ''
+    if decrement:
+        for onu in suffix_to_onus.get(suffix(decrement), []):
+            candidates.append((onu,decrement,'OFFSET_MINUS_1'))
+    unique_onus={c[0] for c in candidates}
+    if len(unique_onus)>1 or len(candidates)>1:
+        return None, '', '', 'AMBIGUOUS'
+    if not candidates:
+        return None, '', '', 'MISMATCH'
+    onu,lan_mac,match_type=candidates[0]
+    return onu,lan_mac,match_type,'MATCH'
 
 def run_ping(ip, *, count=4, wait_ms=1000, runner=subprocess.run):
     """Ping Windows host; count received TTL replies (works across localized Windows).
@@ -143,37 +183,37 @@ def verify_mapping(ips, onu_states, *, ping_fn=None, arp_fn=None):
     used_macs=set()
     for ip in ips:
         ping=ping_results[ip]
-        mac=arp_fn(ip)
-        lan_mac = ''
-        if mac:
-            try:
-                lan_mac = wan_to_lan_mac(mac)
-            except ValueError:
-                pass
-        tail=suffix(lan_mac)
-        candidates=onu_suffixes.get(tail,[]) if lan_mac else []
-        status='NOT FOUND'
+        observed=arp_fn(ip)
+        mac=''
+        lan_mac=''
+        match_type=''
         onu=None
-        if not mac:
+        if not observed:
             status='MAC NOT FOUND'
-        elif not lan_mac:
-            status='INVALID WAN MAC'
-        elif mac in used_macs:
-            status='DUPLICATE MAC'
-        elif len(candidates)>1:
-            status='AMBIGUOUS'
-        elif len(candidates)==0:
-            status='MISMATCH'
-        elif candidates[0] in used_ids:
-            status='DUPLICATE ONU'
         else:
-            onu=candidates[0]
-            status='MATCH' if ping['result']=='PASS' else 'PING UNREACHABLE'
-        if mac:used_macs.add(mac)
+            try:
+                mac=canonical_mac(observed)
+            except ValueError:
+                status='INVALID ARP MAC'
+            else:
+                if mac in used_macs:
+                    status='DUPLICATE MAC'
+                else:
+                    onu,lan_mac,match_type,status=match_mac_to_onu(mac,onu_suffixes)
+                    if status=='MATCH' and onu in used_ids:
+                        status='DUPLICATE ONU'
+                        onu=None
+                        lan_mac=''
+                        match_type=''
+                    elif status=='MATCH' and ping['result']!='PASS':
+                        status='PING UNREACHABLE'
+                used_macs.add(mac)
         if onu is not None and status=='MATCH':
             used_ids.add(onu)
-            matched[onu]={'ip':ip,'mac':mac,'lan_mac':lan_mac,'gpon_sn':onu_states[onu]['gpon_sn']}
-        row={'ip':ip,'mac':mac or '', 'lan_mac':lan_mac, 'onu_id':onu, 'gpon_sn':onu_states[onu]['gpon_sn'] if onu is not None else '',
+            matched[onu]={'ip':ip,'mac':mac,'lan_mac':lan_mac,
+                          'match_type':match_type,'gpon_sn':onu_states[onu]['gpon_sn']}
+        row={'ip':ip,'mac':mac, 'lan_mac':lan_mac, 'match_type':match_type,
+             'onu_id':onu,'gpon_sn':onu_states[onu]['gpon_sn'] if onu is not None else '',
              'ping':ping['result'], 'status':status}
         rows.append(row)
         if status!='MATCH':errors.append(ip+': '+status)

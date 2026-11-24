@@ -1,19 +1,11 @@
-# V3600GS Connect V1.0.3
+# V3600GS Connect V1.0.4
 
-First-stage Tera Term Serial auto-login. Windows 11, GitHub Actions EXE; no Python required on test PC.
+此版針對 V1.0.3 的 `FAIL|SERIAL_CONNECT` 增加實際 TTL 連線結果碼診斷與重新連線。Tera Term Macro 回傳 0 = 未連結、1 = 已連結但未連線、2 = 已連結且已連線。此階段仍需於實機驗證。
 
-## Where are records?
-Records are **not** saved beside the EXE. Use GUI **Open Records Folder**, or press Win+R and enter:
-`%LOCALAPPDATA%\V3600GS_Connect\records`
+## 使用
+1. 上傳本壓縮檔內容到 GitHub 根目錄，透過 Actions 編譯 EXE。
+2. 在 Windows 11 關閉其他佔用 COM 的終端視窗後執行 EXE。
+3. COM 自動識別，Serial 115200，按 Connect & Auto Login。
+4. 失敗請用 Open Records Folder 取出 `execution.log`、每次執行資料夾的 `status.txt`、`stage.txt`、`connect.ttl` 和 `serial.log`（若有）。
 
-`execution.log` records button click, macro creation, process launch, prompt milestones and errors. A time-stamped folder stores the generated `connect.ttl`, `stage.txt`, `status.txt`, and `serial.log` when available. The generated TTL contains embedded credentials, **do not share it unredacted**.
-
-## Operation
-1. Close other sessions holding the COM port.
-2. Start EXE, verify USB-Enhanced-SERIAL port selected.
-3. Click Connect & Auto Login once.
-4. Observe Tera Term, 115200, user-mode → enable → config → GPON 0/1.
-5. If unsuccessful, open records folder and share `execution.log`, `stage.txt`, `status.txt`, redacted `serial.log`, plus screenshot (do not share `connect.ttl`).
-
-## Verification status
-Syntax / tests can run in GitHub Actions. Physical serial + 2011 Tera Term **not validated** without factory setup.
+**注意**：`connect.ttl` 含登入密碼，不要傳給不受信任的對象；如需分享，請先遮蔽密碼。

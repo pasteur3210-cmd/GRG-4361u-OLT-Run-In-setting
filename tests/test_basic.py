@@ -16,7 +16,7 @@ class Tests(unittest.TestCase):
         ttl = build_macro(3, Path('C:/temp/status.txt'), Path('C:/temp/raw.log'))
         for s in ['/C=3', '/BAUD=115200', 'qa123', 'enable', 'config terminal', 'interface gpon 0/1', 'gpon-olt(config-pon-0/1)#', 'FAIL|LOGIN', 'PROMPT|LOGIN', 'CONNECTED|SERIAL']:
             self.assertIn(s, ttl)
-        self.assertIn('if result <> 2 goto CONNECT_FAIL', ttl)
+        self.assertIn('if link_state <> 2 goto CONNECT_FAIL', ttl)
         self.assertNotIn('if result != 2', ttl)
         self.assertNotIn('/CDATABIT=', ttl)  # legacy compatible launch arguments
         self.assertNotIn('messagebox', ttl)  # avoid modal block
@@ -34,3 +34,13 @@ class Tests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_macro_records_numeric_link_state(tmp_path):
+    import main
+    ttl = main.build_macro(3, tmp_path / "status.txt", tmp_path / "serial.log", tmp_path / "stage.txt")
+    assert "link_state = result" in ttl
+    assert "FAIL|SERIAL_CONNECT|LINK_STATE=" in ttl
+    assert "testlink" in ttl
+    assert "LOGIN_PROMPT_TIMEOUT" in ttl
+    assert "sendln" in ttl

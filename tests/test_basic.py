@@ -20,6 +20,15 @@ class Tests(unittest.TestCase):
         self.assertNotIn('if result != 2', ttl)
         self.assertNotIn('/CDATABIT=', ttl)  # legacy compatible launch arguments
         self.assertNotIn('messagebox', ttl)  # avoid modal block
+    def test_release_version_matches_build_workflow(self):
+        import main
+        workflow = (Path(__file__).resolve().parents[1] / '.github' / 'workflows' / 'build.yml').read_text(encoding='utf-8')
+        expected = f'V3600GS_Connect_V{main.APP_VERSION}'
+        self.assertIn(f'--name {expected} main.py', workflow)
+        self.assertIn(f'dist/{expected}.exe', workflow)
+        self.assertIn(f'name: {expected}', workflow)
+        self.assertNotIn('V3600GS_Connect_V1.0.3', workflow)
+
     def test_records_directory_creation(self):
         from tempfile import TemporaryDirectory
         with TemporaryDirectory() as temp:

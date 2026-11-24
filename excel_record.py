@@ -148,9 +148,9 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
                 event_rows.append([cycle.get('cycle',i),cycle['time'],onu,item.get('gpon_sn'),
                                    before,current,'RECOVERY' if current.lower()=='working' else 'STATE CHANGE'])
             previous[onu]=current
-    mapping_rows=[['ONU ID','GPON SN','DUT IP','MAC Address','Pre-Run Mapping']]
+    mapping_rows=[['ONU ID','GPON SN','DUT IP','WAN MAC (ARP)','LAN MAC (-1)','Pre-Run Mapping']]
     for onu,entry in sorted(mapping.items()):
-        mapping_rows.append([onu,entry['gpon_sn'],entry['ip'],entry['mac'],'MATCH'])
+        mapping_rows.append([onu,entry['gpon_sn'],entry['ip'],entry['mac'],entry.get('lan_mac',''),'MATCH'])
     last_ping={}
     for i,cycle in enumerate(cycles,1):
         for onu_key, p in sorted(cycle.get('ping',{}).items(),key=lambda kv:int(kv[0])):
@@ -169,6 +169,7 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
              ['Ping Result', 'PASS 0/4 lost; WARNING 1/4; FAIL >=2/4; ERROR cannot determine loss'],
              ['N/A', 'Device returned N/A; do not interpret as PASS'],
              ['Units', 'Rx/Tx are raw CLI values; confirm dBm with product specification'],
+             ['Mapping rule', 'ARP WAN MAC minus 1 (full 48-bit), then compare last 6 hex digits with GPON SN'],
              ['Source', 'show onu state + show onu time-stamp + show onu optical-info all']]
     return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_IP_Mapping', mapping_rows), ('04_Event_Log', event_rows), ('05_Field_Notes', notes)]
 

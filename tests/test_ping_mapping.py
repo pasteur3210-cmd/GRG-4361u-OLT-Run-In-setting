@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 from zipfile import ZipFile
 from onu_parser import parse_onu_state
-from ping_mapping import (normalize_ips,suffix,find_mac,run_ping,ping_all,verify_mapping)
+from ping_mapping import (normalize_ips,suffix,find_mac,wan_to_lan_mac,run_ping,ping_all,verify_mapping)
 from excel_record import FIELDS,build_rows
 from session_runner import run_session, read_journal
 
 STATE='OnuIndex Admin State OMCC State Phase State Channel Serial Number\n1:1 enable enable working XGSPON CMTDc0112255\n1:2 enable enable working XGSPON CMTD99abe129\n'
 S=parse_onu_state(STATE)
 IP1='192.168.2.101';IP2='192.168.2.102'
-ARP='Interface: 192.168.2.10 --- 0x10\n  Internet Address      Physical Address      Type\n  192.168.2.1           aa-bb-cc-ff-ee-dd     dynamic\n  192.168.2.101         aa-bb-cc-11-22-55     dynamic\n  192.168.2.102         aa-bb-cc-be-12-90     dynamic\n'
+ARP='Interface: 192.168.2.10 --- 0x10\n  Internet Address      Physical Address      Type\n  192.168.2.1           aa-bb-cc-ff-ee-dd     dynamic\n  192.168.2.101         aa-bb-cc-11-22-56     dynamic\n  192.168.2.102         aa-bb-cc-ab-e1-2a     dynamic\n'
 
 def good_ping(ip,*,count,wait_ms=1000):
     return dict(result='PASS',loss=0,received=count,sent=count,error='',raw='TTL=64\n'*count)
@@ -27,9 +27,53 @@ class PingTests(unittest.TestCase):
         self.assertEqual(suffix('CMTDc0112255'),'112255')
         self.assertEqual(suffix('AA-BB-CC-11-22-55'),'112255')
         self.assertEqual(suffix('CMTD99abe129'),'ABE129')
+    def test_wan_to_lan_actual_dut_samples(self):
+        self.assertEqual(wan_to_lan_mac('38-72-c0-11-22-56'), '3872C0112255')
+        self.assertEqual(wan_to_lan_mac('1c:64:99:ab:e1:2a'), '1C6499ABE129')
+        self.assertEqual(suffix(wan_to_lan_mac('3872C0112256')),suffix('CMTDc0112255'))
+        self.assertEqual(suffix(wan_to_lan_mac('1C6499ABE12A')),suffix('CMTD99abe129'))
+
+    def test_full_48_bit_borrow(self):
+        self.assertEqual(wan_to_lan_mac('3872C0112300'),'3872C01122FF')
+        self.assertEqual(wan_to_lan_mac('000000010000'),'00000000FFFF')
+
+    def test_invalid_wan_mac_never_matches(self):
+        for x in ('', '0'*12, 'F'*12, '11:22:33', 'Z'*12):
+            with self.subTest(value=x), self.assertRaises(ValueError):wan_to_lan_mac(x)
+
+    def test_actual_two_dut_mapping(self):
+        ips=['192.168.2.121','192.168.2.122']
+        macs={'192.168.2.121':'3872C0112256','192.168.2.122':'1C6499ABE12A'}
+        rows,matched,errors=verify_mapping(ips,S,ping_fn=good_ping,arp_fn=macs.__getitem__)
+        self.assertEqual(errors,[])
+        self.assertEqual([r['status'] for r in rows],['MATCH','MATCH'])
+        self.assertEqual(matched[1]['lan_mac'],'3872C0112255')
+        self.assertEqual(matched[2]['lan_mac'],'1C6499ABE129')
+        self.assertEqual(matched[1]['ip'],ips[0])
+        self.assertEqual(matched[2]['ip'],ips[1])
+
+    def test_wrong_wan_suffix_not_assigned(self):
+        rows,matched,errors=verify_mapping([IP1],{1:S[1]},ping_fn=good_ping,
+                        arp_fn=lambda ip:'3872C0112255')
+        self.assertEqual(rows[0]['status'],'MISMATCH')
+        self.assertFalse(matched)
+        self.assertTrue(errors)
+
+    def test_16_dynamic_mac_pairs(self):
+        states={i:dict(gpon_sn='CMTD'+format(0x10000000+i,'08X')) for i in range(1,17)}
+        ips=[f'192.168.2.{100+i}' for i in range(1,17)]
+        arp={ip:f'{0x3872C0000000 + i + 1:012X}' for i,ip in enumerate(ips,1)}
+        # Adjust SN trailing six bytes to derived LAN (full 48-bit counter).
+        for i in range(1,17):
+            states[i]['gpon_sn']='CMTD'+format(0xC0000000+i,'08X')
+        rows,matched,errors=verify_mapping(ips,states,ping_fn=good_ping,arp_fn=arp.__getitem__)
+        self.assertEqual(errors,[])
+        self.assertEqual(len(matched),16)
+        self.assertTrue(all(r['status']=='MATCH' for r in rows))
+
     def test_arp_match_only_exact_ip(self):
-        self.assertEqual(find_mac(ARP,IP1),'AABBCC112255')
-        self.assertEqual(find_mac(ARP,IP2),'AABBCCBE1290')
+        self.assertEqual(find_mac(ARP,IP1),'AABBCC112256')
+        self.assertEqual(find_mac(ARP,IP2),'AABBCCABE12A')
         self.assertIsNone(find_mac(ARP,'192.168.2.103'))
     def test_good_and_fail_and_warning(self):
         class Result:
@@ -51,7 +95,7 @@ class PingTests(unittest.TestCase):
         self.assertEqual(set(ping_all(ips,ping_fn=good_ping)),set(ips))
     def test_mapping_exact(self):
         rows,matched,errors=verify_mapping([IP1],{1:S[1]},ping_fn=good_ping,
-                        arp_fn=lambda ip:'AABBCC112255')
+                        arp_fn=lambda ip:'AABBCC112256')
         self.assertEqual(errors,[])
         self.assertEqual(matched[1]['gpon_sn'],'CMTDc0112255')
         self.assertEqual(rows[0]['status'],'MATCH')
@@ -67,17 +111,17 @@ class PingTests(unittest.TestCase):
     def test_mapping_duplicate_suffix(self):
         states={1:S[1],2:dict(S[2],gpon_sn='CMTDDE112255')}
         rows,matched,errors=verify_mapping([IP1],states,ping_fn=good_ping,
-                        arp_fn=lambda ip:'AABBCC112255')
+                        arp_fn=lambda ip:'AABBCC112256')
         self.assertEqual(rows[0]['status'],'AMBIGUOUS')
         self.assertTrue(errors)
     def test_mapping_all_ip_and_onu_required(self):
         rows,matched,errors=verify_mapping([IP1],S,ping_fn=good_ping,
-                        arp_fn=lambda ip:'AABBCC112255')
+                        arp_fn=lambda ip:'AABBCC112256')
         self.assertTrue(errors)
     def test_mapping_ping_unreachable(self):
         def broken(ip,*,count,wait_ms=1000):return dict(result='FAIL',loss=1,received=0,sent=1,error='',raw='')
         rows,matched,errors=verify_mapping([IP1],{1:S[1]},ping_fn=broken,
-                        arp_fn=lambda ip:'AABBCC112255')
+                        arp_fn=lambda ip:'AABBCC112256')
         self.assertEqual(rows[0]['status'],'PING UNREACHABLE')
         self.assertFalse(matched);self.assertTrue(errors)
     def test_summary_columns_only_two_new_ping(self):
@@ -88,8 +132,8 @@ class PingTests(unittest.TestCase):
         self.assertIn('PING Loss',labels)
         cycle={'cycle':1,'time':'t','onus':S,'result':'PASS',
                'ping':{'1':{'result':'PASS','loss':0},'2':{'result':'WARNING','loss':1}}}
-        rows=build_rows([cycle],mapping={1:{'ip':IP1,'mac':'AABBCC112255','gpon_sn':S[1]['gpon_sn']},
-                                             2:{'ip':IP2,'mac':'AABBCCABE129','gpon_sn':S[2]['gpon_sn']}})
+        rows=build_rows([cycle],mapping={1:{'ip':IP1,'mac':'AABBCC112256','gpon_sn':S[1]['gpon_sn']},
+                                             2:{'ip':IP2,'mac':'AABBCCABE12A','gpon_sn':S[2]['gpon_sn']}})
         header,data=rows[0][1]
         self.assertEqual(data[header.index('ONU2_PING Loss')],'1/4')
         self.assertEqual(data[header.index('ONU1_IP PING Result')],'PASS')
@@ -110,7 +154,7 @@ class PingTests(unittest.TestCase):
                 if cmd=='show onu time-stamp':return '1/12026:11:23 16:47:05N/AN/A20:52:29\n'
                 if cmd=='show onu optical-info all':return 'ONU ID : 1\nRx optical level(ONU) : -26.78\n'
             def close(self):pass
-        mapping={1:{'ip':IP1,'mac':'AABBCC112255','gpon_sn':S[1]['gpon_sn']}}
+        mapping={1:{'ip':IP1,'mac':'AABBCC112256','gpon_sn':S[1]['gpon_sn']}}
         with tempfile.TemporaryDirectory() as td:
             result=run_session(Client,td,logging.getLogger('new'),threading.Event(),
                                mapping=mapping,ping_fn=good_ping)
@@ -137,6 +181,6 @@ class AdditionalRegression(unittest.TestCase):
         d={1:{'gpon_sn':S[1]['gpon_sn'],'phase_state':'working','status':'PASS'}}
         cycles=[{'time':'t1','onus':d,'ping':{'1':{'result':'FAIL','loss':2}}},
                 {'time':'t2','onus':d,'ping':{'1':{'result':'PASS','loss':0}}}]
-        mapping={1:{'ip':IP1,'mac':'AABBCC112255','gpon_sn':S[1]['gpon_sn']}}
+        mapping={1:{'ip':IP1,'mac':'AABBCC112256','gpon_sn':S[1]['gpon_sn']}}
         event_sheet=build_rows(cycles,mapping=mapping)[3][1]
         self.assertTrue(any('PING RECOVERY' in row for row in event_sheet))

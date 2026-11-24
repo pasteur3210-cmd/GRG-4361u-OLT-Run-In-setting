@@ -1,16 +1,19 @@
-# Factory SOP — V1.0.12
+# FACTORY SOP — V3600GS Connect V1.0.14
 
-1. Close Tera Term. Connect V3600GS Serial to USB and power on OLT.
-2. Run `V3600GS_Connect_V1.0.12.exe`, confirm auto-detected COM and fixed 115200 baud.
-3. Choose **Single Check** for one round, or **Loop Check** for repeated monitoring.
-4. For Loop set `Check Interval` in minutes and `Duration` in hours (0 means until Stop).
-5. Click **Start ONU Check** and observe CHECKING, cycle number and `PASS / FAIL / INCOMPLETE / ERROR`.
-6. A successful single check ends with `COMPLETED — 1 cycles`. No need to press Stop.
-7. Loop automatically ends at duration or stops when Stop is pressed; Stop is not FAIL.
-8. Use `Open Records Folder`; each Start produces exactly one `records/Run_...` folder.
-9. Inspect `ONU_Master_Record.xlsx` first tab; each cycle is a row and each ONU has stable ID-based columns.
-10. If FAIL, check `ONU*_Phase State` / `ONU*_ONU Result`; for ERROR inspect raw CLI and execution.log.
-11. If Excel is open while test is running, close it: file lock can block updates. JSONL retains cycles.
-12. Record all observed OLT and PC faults; send complete session folder for diagnosis.
+1. Close Tera Term. Connect OLT console cable and local DUT LAN to the test PC.
+2. Run EXE (no local Python needed). Select detected `USB-Enhanced-SERIAL` COM port; serial is 115200 / 8N1.
+3. Paste IPv4 addresses **one per line**; verify no duplicates.
+4. Click `Verify IP / MAC / GPON SN Mapping` and wait for table results. Check all IP, MAC, ONU ID, GPON SN, and MATCH status. A MAC/IP missing or suffix mismatching must be resolved before running; do not guess mapping.
+5. Configure Single or Loop, Interval and Duration (`0` = until Stop), then click `Start ONU Check`.
+6. Each complete cycle records three ONU commands and four Windows Ping packets per DUT. 0 lost PASS; 1 WARNING; 2+ FAIL.
+7. A session writes to `records/Run_<timestamp>/ONU_Master_Record.xlsx` cumulatively, with `cycles.jsonl` journal, `mapping.json`, `raw_cli/` and `raw_ping/`.
+8. Do not keep the Excel workbook open while testing. Use `Stop` to finish and retain completed cycles. New runs require fresh mapping verification.
+9. If an error occurs, provide the entire `records/Mapping_...` or `Run_...` folder and GUI screenshot to engineering.
 
-IMPORTANT: State PASS means `Phase State = working`, not product qualification. Optical data is record-only pending specification. Ping not included.
+**Engineering warning:** A successful Ping/IP pairing depends on the Windows ARP MAC representing the actual DUT interface. These are DUT-side network checks, not proof of ONU optical compliance.
+
+## V1.0.14 Mapping check
+- Before starting, enter the actual IPs and select Verify Mapping.
+- GUI shows ARP **WAN MAC**, computed **LAN MAC (-1)**, matching ONU ID and GPON SN.
+- Real example: 192.168.2.121 WAN 3872C0112256 -> LAN 3872C0112255 -> ONU 1; 192.168.2.122 WAN 1C6499ABE12A -> LAN 1C6499ABE129 -> ONU 2.
+- Mapping FAIL blocks Start; check IP/MAC/L2 topology. No manual force-PASS.

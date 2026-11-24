@@ -1,7 +1,7 @@
 """Windows IPv4 Ping and strict IP<->ARP MAC<->GPON SN association.
 
-ARP neighbor entries are accepted only if their last 6 hexadecimal characters
-uniquely match a discovered ONU's GPON SN suffix. No index/order pairing.
+ARP neighbor entries are treated as WAN MAC; WAN MAC minus one yields
+LAN MAC, whose last 6 hexadecimal characters must uniquely match a discovered ONU's GPON SN suffix. No index/order pairing.
 """
 from __future__ import annotations
 import concurrent.futures
@@ -44,6 +44,20 @@ def normalize_ips(value):
 
 def suffix(value):
     return re.sub(r'[^0-9a-fA-F]', '', str(value or '')).upper()[-6:]
+
+
+def wan_to_lan_mac(wan_mac):
+    """Derive full 48-bit LAN MAC = WAN MAC - 1; reject invalid/underflow.
+
+    Do not subtract from the last nibble or last byte alone: borrow matters.
+    """
+    normalized = re.sub(r'[:-]', '', str(wan_mac or '')).upper()
+    if not re.fullmatch(r'[0-9A-F]{12}', normalized):
+        raise ValueError('Invalid 48-bit WAN MAC')
+    value = int(normalized, 16)
+    if value == 0 or value == (1 << 48) - 1:
+        raise ValueError('Invalid/reserved WAN MAC')
+    return f'{value - 1:012X}'
 
 
 def run_ping(ip, *, count=4, wait_ms=1000, runner=subprocess.run):
@@ -130,12 +144,20 @@ def verify_mapping(ips, onu_states, *, ping_fn=None, arp_fn=None):
     for ip in ips:
         ping=ping_results[ip]
         mac=arp_fn(ip)
-        tail=suffix(mac)
-        candidates=onu_suffixes.get(tail,[]) if mac else []
+        lan_mac = ''
+        if mac:
+            try:
+                lan_mac = wan_to_lan_mac(mac)
+            except ValueError:
+                pass
+        tail=suffix(lan_mac)
+        candidates=onu_suffixes.get(tail,[]) if lan_mac else []
         status='NOT FOUND'
         onu=None
         if not mac:
             status='MAC NOT FOUND'
+        elif not lan_mac:
+            status='INVALID WAN MAC'
         elif mac in used_macs:
             status='DUPLICATE MAC'
         elif len(candidates)>1:
@@ -150,8 +172,8 @@ def verify_mapping(ips, onu_states, *, ping_fn=None, arp_fn=None):
         if mac:used_macs.add(mac)
         if onu is not None and status=='MATCH':
             used_ids.add(onu)
-            matched[onu]={'ip':ip,'mac':mac,'gpon_sn':onu_states[onu]['gpon_sn']}
-        row={'ip':ip,'mac':mac or '', 'onu_id':onu, 'gpon_sn':onu_states[onu]['gpon_sn'] if onu is not None else '',
+            matched[onu]={'ip':ip,'mac':mac,'lan_mac':lan_mac,'gpon_sn':onu_states[onu]['gpon_sn']}
+        row={'ip':ip,'mac':mac or '', 'lan_mac':lan_mac, 'onu_id':onu, 'gpon_sn':onu_states[onu]['gpon_sn'] if onu is not None else '',
              'ping':ping['result'], 'status':status}
         rows.append(row)
         if status!='MATCH':errors.append(ip+': '+status)

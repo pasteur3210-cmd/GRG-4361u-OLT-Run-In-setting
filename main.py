@@ -20,7 +20,7 @@ from session_runner import run_session, rebuild_excel
 from ping_mapping import normalize_ips, verify_mapping
 from serial.tools import list_ports
 
-VERSION = "1.0.13"
+VERSION = "1.0.14"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -277,8 +277,8 @@ class GUI:
         self.verify_btn.pack(side='left')
         self.mapping_label=tk.StringVar(value='Mapping NOT VERIFIED — verify before Start')
         ttk.Label(mbuttons,textvariable=self.mapping_label).pack(side='left',padx=12)
-        self.map_tree=ttk.Treeview(mappingframe,columns=('ip','mac','onu','sn','ping','status'),show='headings',height=4)
-        for key,label,width in [('ip','DUT IP',130),('mac','MAC',150),('onu','ONU ID',80),('sn','GPON SN',150),('ping','Pre-Ping',90),('status','Mapping',170)]:
+        self.map_tree=ttk.Treeview(mappingframe,columns=('ip','mac','lan','onu','sn','ping','status'),show='headings',height=4)
+        for key,label,width in [('ip','DUT IP',130),('mac','WAN MAC (ARP)',145),('lan','LAN MAC (-1)',145),('onu','ONU ID',80),('sn','GPON SN',150),('ping','Pre-Ping',90),('status','Mapping',170)]:
             self.map_tree.heading(key,text=label)
             self.map_tree.column(key,width=width,stretch=True)
         self.map_tree.pack(fill='x',pady=(5,0))
@@ -476,7 +476,7 @@ class GUI:
                     self.refresh_button.configure(state='normal')
                     for existing in self.map_tree.get_children():self.map_tree.delete(existing)
                     for row in msg['rows']:
-                        self.map_tree.insert('', 'end', values=(row['ip'],row['mac'],row['onu_id'] or '',
+                        self.map_tree.insert('', 'end', values=(row['ip'],row['mac'],row.get('lan_mac',''),row['onu_id'] or '',
                                              row['gpon_sn'],row['ping'],row['status']))
                     if not msg['errors'] and self.mapping_snapshot()==msg['snapshot']:
                         self.verified_mapping=msg['mapping']

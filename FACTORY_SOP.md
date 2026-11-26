@@ -1,4 +1,4 @@
-# Factory SOP — V3600GS Connect V1.0.18
+# Factory SOP — V3600GS Connect V1.0.19
 1. Connect V3600GS Console USB and verify `USB-Enhanced-SERIAL` COM, close Tera Term.
 2. Set PC local timezone; plug into AC power. Set Windows 11 Power & battery > Screen, sleep & hibernate to keep system awake during the run, disable scheduled automatic restart, and verify USB/Network stability.
 3. Launch EXE, enter DUT IPs on same L2 network; click Verify Mapping. Only proceed on unique MATCH rows.
@@ -24,3 +24,12 @@
 4. At 8h cumulative Failed >50 is FAIL; at 16h >100; at 24h >150; repeat every 8h with an additional 50 allowance. A failing earlier checkpoint remains failing forever in the session.
 5. Confirm `continuous_ping_checkpoints.csv` and `continuous_ping_summary.csv` as well as `continuous_ping_events.csv` after stopping. `Allowed Loss` on GUI shows the **last completed** checkpoint allowance (0 before first 8h).
 6. To force-test the immediate rule on two DUTs, disconnect one unit briefly until it records 6+ consecutive timeouts, then reconnect. The other unit must remain independent and Excel/OLT checks must continue.
+
+## V1.0.19 Pre-run static IP automatic detection
+1. Prepare the DUTs with fixed IPs selected from 192.168.2.121–192.168.2.136 (DHCP not used). Ensure the test PC is on the same Layer-2 LAN.
+2. Select **Expected DUT Count**, from 1 to 16. DUT IPs need not be sequential.
+3. Click **Auto Scan & Verify IP / MAC / GPON SN**. Confirm each DUT IP maps to a unique OLT ONU ID and GPON SN, using the existing ARP MAC matching rules.
+4. If `MAPPING FAILED / INCOMPLETE`, do not start: verify the expected count, ONU state, static IP conflicts, cables and failed Ping. An unreachable expected DUT must not be omitted from the test.
+5. Start Run-in after verification. The second **Live Ping Monitor** tab shares the current session; it does not open a separate Serial connection or modify the Excel directly.
+6. In Excel `04_Event_Log`, check timestamp-change / PON reconnect history separately from current `working` state. OLT/PC clocks can differ; do not interpret their raw timestamps as a unified clock.
+7. Before the first 8-hour checkpoint, `Allowed Loss` shows `50 (8h PENDING)`; cumulative checkpoint FAIL is evaluated at elapsed 8/16/24 hours, while ≥6 consecutive losses fail immediately.

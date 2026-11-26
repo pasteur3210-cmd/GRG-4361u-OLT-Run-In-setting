@@ -17,10 +17,10 @@ import serial
 from onu_parser import parse_time_stamp, parse_optical, merge_state_data, parse_onu_state
 from excel_record import export_cycles
 from session_runner import run_session, rebuild_excel
-from ping_mapping import normalize_ips, verify_mapping
+from ping_mapping import STATIC_IP_POOL, discover_static_mapping
 from serial.tools import list_ports
 
-VERSION = "1.0.18"
+VERSION = "1.0.19"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -272,13 +272,19 @@ class GUI:
         self.last_excel = None
         self.verified_mapping = None
         self.verified_snapshot = None
-        self.ip_text = None
-        self.tabs=ttk.Notebook(root)
+        self.expected_count_var = tk.StringVar(value='2')
+        # One and only one tab navigation bar; larger selected/unselected tabs.
+        style=ttk.Style(root)
+        style.configure('Runin.TNotebook.Tab',font=('Segoe UI',12,'bold'),padding=(25,13))
+        style.configure('Runin.TNotebook',tabposition='n')
+        style.map('Runin.TNotebook.Tab',foreground=[('selected','#064f95'),('!selected','#333333')],
+                  background=[('selected','#b9dcff'),('!selected','#e6eaf0')])
+        self.tabs=ttk.Notebook(root,style='Runin.TNotebook')
         self.tabs.pack(fill='both',expand=True)
         frm=ttk.Frame(self.tabs,padding=16)
-        self.tabs.add(frm,text='OLT & IP Setup / ONU Check')
+        self.tabs.add(frm,text='① OLT & IP Setup / ONU Check')
         self.ping_page=ttk.Frame(self.tabs,padding=16)
-        self.tabs.add(self.ping_page,text='Live Ping Monitor')
+        self.tabs.add(self.ping_page,text='② Live Ping Monitor')
         self.ping_rows={}
         self.ping_status=tk.StringVar(value='Not monitoring — Start Run-in from OLT & IP Setup')
         self.ping_interval_var=tk.StringVar(value='1.0')
@@ -331,12 +337,16 @@ class GUI:
         self.duration_input.pack(side='left',padx=(5,0))
         mappingframe=ttk.LabelFrame(frm,text='Pre-Run DUT IP / MAC / GPON SN Verification',padding=8)
         mappingframe.pack(fill='x',pady=(3,7))
-        ttk.Label(mappingframe,text='DUT IP list (one IPv4 per line; same LAN as test PC)').pack(anchor='w')
-        self.ip_text=tk.Text(mappingframe,height=3,width=65)
-        self.ip_text.pack(fill='x',pady=(2,5))
-        self.ip_text.bind('<KeyRelease>',self.invalidate_mapping)
+        iprow=ttk.Frame(mappingframe);iprow.pack(fill='x',pady=(1,6))
+        ttk.Label(iprow,text='Static IP Pool: 192.168.2.121 – 192.168.2.136 (16 addresses)').pack(side='left')
+        ttk.Label(iprow,text='  Expected DUT Count:').pack(side='left',padx=(16,4))
+        self.expected_count_combo=ttk.Combobox(iprow,textvariable=self.expected_count_var,
+                                                values=tuple(map(str,range(1,17))),width=5,state='readonly')
+        self.expected_count_combo.pack(side='left')
+        self.expected_count_combo.bind('<<ComboboxSelected>>',self.invalidate_mapping)
+        ttk.Label(mappingframe,text='Auto Scan searches the static pool; non-contiguous IPs supported. No DHCP or manual IP entry.').pack(anchor='w')
         mbuttons=ttk.Frame(mappingframe);mbuttons.pack(fill='x')
-        self.verify_btn=ttk.Button(mbuttons,text='Verify IP / MAC / GPON SN Mapping',command=self.verify)
+        self.verify_btn=ttk.Button(mbuttons,text='Auto Scan & Verify IP / MAC / GPON SN',command=self.verify)
         self.verify_btn.pack(side='left')
         self.mapping_label=tk.StringVar(value='Mapping NOT VERIFIED — verify before Start')
         ttk.Label(mbuttons,textvariable=self.mapping_label).pack(side='left',padx=12)
@@ -375,23 +385,25 @@ class GUI:
         self.start_btn.configure(state='disabled')
 
     def mapping_snapshot(self):
-        return (self.options.get(self.port_var.get(),''),self.ip_text.get('1.0','end').strip())
+        return (self.options.get(self.port_var.get(),''),self.expected_count_var.get())
 
     def verify(self):
         if self.running:return
-        port,iptext=self.mapping_snapshot()
+        port,count_text=self.mapping_snapshot()
         if not valid_port(port):
             messagebox.showerror('COM Port','Select COM port');return
         try:
-            ips=normalize_ips(iptext)
+            expected=int(count_text)
+            if not 1 <= expected <= 16:raise ValueError('Expected DUT Count must be 1..16')
         except ValueError as exc:
-            messagebox.showerror('DUT IP List',str(exc));return
+            messagebox.showerror('Expected DUT Count',str(exc));return
         self.invalidate_mapping()
         self.running=True
         self.stop_flag.clear()
         self.verify_btn.configure(state='disabled')
         self.combo.configure(state='disabled')
         self.refresh_button.configure(state='disabled')
+        self.expected_count_combo.configure(state='disabled')
         self.state.set('VERIFYING MAPPING — ONU state and IP / MAC ...')
         logger_folder=RECORD_ROOT/('Mapping_'+dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
         try:logger=make_logger(logger_folder)
@@ -400,8 +412,9 @@ class GUI:
             self.verify_btn.configure(state='normal')
             self.combo.configure(state='readonly')
             self.refresh_button.configure(state='normal')
+            self.expected_count_combo.configure(state='readonly')
             messagebox.showerror('Record',str(exc));return
-        snapshot=(port,iptext)
+        snapshot=(port,count_text)
         def worker():
             try:
                 client=SerialLogin(port,logger,self.stop_flag,on_stage=lambda x:self.messages.put(('stage',x)))
@@ -411,10 +424,10 @@ class GUI:
                     (logger_folder/'onu_state.log').write_text(raw,encoding='utf-8')
                     states=parse_onu_state(raw)
                 finally:client.close()
-                rows,mapping,errors=verify_mapping(ips,states)
+                rows,mapping,errors=discover_static_mapping(states,expected)
                 (logger_folder/'mapping_check.json').write_text(
                     __import__('json').dumps({'rows':rows,'errors':errors},ensure_ascii=False,indent=2),encoding='utf-8')
-                logger.info('MAPPING_FINISHED|IPS=%s|MATCH=%s|ERRORS=%s',len(ips),len(mapping),len(errors))
+                logger.info('MAPPING_FINISHED|IPS=%s|MATCH=%s|ERRORS=%s',len(STATIC_IP_POOL),len(mapping),len(errors))
                 self.messages.put(('MAPPING_DONE',{'rows':rows,'mapping':mapping,'errors':errors,'snapshot':snapshot}))
             except Exception as exc:
                 logger.exception('MAPPING_ERROR')
@@ -470,6 +483,7 @@ class GUI:
         self.ping_interval_input.configure(state='disabled')
         self.combo.configure(state='disabled')
         self.refresh_button.configure(state='disabled')
+        self.expected_count_combo.configure(state='disabled')
         self.excel_btn.configure(state='disabled')
         self.last_excel=None
         self.update_mode()
@@ -543,7 +557,7 @@ class GUI:
                     loss=f'{failed/sent*100:.3f}%' if sent else '—'
                     vals=(onu,row['ip'],row['status'],row.get('test_result','MONITORING'),row['rtt_ms'] if row['rtt_ms'] is not None else '—',
                           row['success'],failed,loss,row['max_consecutive'],
-                          f"{row.get('allowed_loss',0)} ({row.get('checkpoints_completed',0)*8}h)",
+                          (f"{row.get('allowed_loss',0)} ({row.get('checkpoints_completed',0)*8}h)" if row.get('checkpoints_completed',0) else '50 (8h PENDING)'),
                           row['last_success'].replace('T',' ') if row['last_success'] else '—',
                           row['last_failed'].replace('T',' ') if row['last_failed'] else '—')
                     key=str(onu)
@@ -572,6 +586,7 @@ class GUI:
                     self.verify_btn.configure(state='normal')
                     self.combo.configure(state='readonly')
                     self.refresh_button.configure(state='normal')
+                    self.expected_count_combo.configure(state='readonly')
                     for existing in self.map_tree.get_children():self.map_tree.delete(existing)
                     for row in msg['rows']:
                         self.map_tree.insert('', 'end', values=(row['ip'],row['mac'],row.get('lan_mac',''),row.get('match_type',''),row['onu_id'] or '',
@@ -596,6 +611,7 @@ class GUI:
                     self.ping_interval_input.configure(state='normal')
                     self.combo.configure(state='readonly')
                     self.refresh_button.configure(state='normal')
+                    self.expected_count_combo.configure(state='readonly')
                     self.update_mode()
                     self.last_excel=Path(msg['folder'])/'ONU_Master_Record.xlsx'
                     if self.last_excel.is_file():self.excel_btn.configure(state='normal')

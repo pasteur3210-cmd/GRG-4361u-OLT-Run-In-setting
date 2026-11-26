@@ -1,19 +1,19 @@
-# V3600GS Connect V1.0.18
+# V3600GS Connect V1.0.19
 Windows 11 direct Serial tool; no Tera Term required while running the compiled EXE. Auto COM selection, 115200 8N1, login, ONU state/time-stamp/optical queries, continuous multi-IP independent Ping, per-run Excel accumulation.
 
 ## Build
 Upload the **contents** of the GitHub ZIP to repository root, including `.github/workflows/build.yml`; run Build V3600GS Connect via GitHub Actions. Install Tera Term only for separate troubleshooting; close its COM session before starting the tool.
 
 ## Mapping / Run
-Put DUT IPs (same LAN), Verify IP/MAC/GPON SN Mapping. The ARP MAC must match LAN MAC directly or LAN MAC + 1 (full 48-bit subtraction), uniquely matching the GPON SN last six hex digits. Set Single or Loop Check; pre-run verification performs one Ping for ARP cache; after Start, Continuous Ping sends one probe per configured interval (default 1 second). Any timeout is recorded; no 4-packet threshold. Record appears beside EXE under `records/Run_.../`.
+Select Expected DUT Count (1–16); Auto Scan checks the fixed static IP pool 192.168.2.121–192.168.2.136 (sparse IPs supported), then verifies IP/MAC/GPON SN Mapping. No DHCP or operator IP text entry. The ARP MAC must match LAN MAC directly or LAN MAC + 1 (full 48-bit subtraction), uniquely matching the GPON SN last six hex digits. Set Single or Loop Check; pre-run verification performs one Ping for ARP cache; after Start, Continuous Ping sends one probe per configured interval (default 1 second). Any timeout is recorded; no 4-packet threshold. Record appears beside EXE under `records/Run_.../`.
 
 ## Night Run precautions
 Do not open the active Excel during a run. Confirm Windows automatic Sleep and scheduled restart are disabled, the OLT/USB adapter remains powered, and local Windows timezone is correct before starting. Metadata records the first cycle UTC offset and JSONL stores per-cycle offsets. Use `cycles.jsonl` for recovery if Excel cannot be updated.
 
 ## Verification boundary
-115 automated unit/regression checks pass on the current development runtime; physical overnight stability, GitHub Windows Actions compile and US English Windows deployment remain field-gated.
+125 automated unit/regression checks pass on the current development runtime; physical overnight stability, GitHub Windows Actions compile and US English Windows deployment remain field-gated.
 
-## V1.0.18 — Continuous Ping and two-page GUI
+## V1.0.19 — Continuous Ping and two-page GUI
 
 * **Tab 1: OLT & IP Setup / ONU Check** — COM selection, fixed Serial login, IP/MAC/GPON SN verification, Single/Loop settings, Start/Stop, Excel and CLI record access.
 * **Tab 2: Live Ping Monitor** — live status, RTT, successes, failures, loss %, last success/failure timestamps and **Max Consecutive Loss**. This is the historical maximum and **never resets when Ping recovers**. The Live Ping tab shares the same Run-in session and Stop control; it cannot open the COM port.
@@ -26,13 +26,13 @@ Do not open the active Excel during a run. Confirm Windows automatic Sleep and s
 
 ## Compatibility / limitation
 
-Run on Windows 11 with native Ping and direct Serial. GitHub Actions compiles using Python 3.11 and PyInstaller. This release was reviewed with the supplied **477-cycle V1.0.16 Night Run logs** and unit/integration test doubles; the compiled V1.0.18 EXE and sustained 16-IP live network monitoring still require Windows/OLT validation.
+Run on Windows 11 with native Ping and direct Serial. GitHub Actions compiles using Python 3.11 and PyInstaller. This release builds on the 477-cycle V1.0.16 Night Run and 31-cycle V1.0.18 two-DUT field observations, with local regression tests; the compiled V1.0.19 EXE and sustained 16-IP live network monitoring still require Windows/OLT validation.
 
 
-## Multi-page ONU CLI safety (V1.0.18 updated build)
+## Multi-page ONU CLI safety (V1.0.19 updated build)
 Three commands (`show onu state`, `show onu time-stamp`, `show onu optical-info all`) share pagination with split/ANSI pager handling. A complete GPON CLI prompt is required; incomplete screens time out rather than being accepted. State/Time-stamp IDs must reconcile, and each `working` ONU must have the required Optical Rx, Tx, voltage, current, temperature values. Incomplete/malformed results flag the affected cycle rather than silently passing. First 10–16 DUT real-hardware validation remains required.
 
-## V1.0.18 — Continuous Ping acceptance (scheme A)
+## V1.0.19 — Continuous Ping acceptance (scheme A)
 * Independent judgment per DUT; historical `Max Consecutive Loss >= 6` triggers FAIL immediately.
 * Evaluate cumulative number of timeouts at exact elapsed-session checkpoints: 8h 50, 16h 100, 24h 150, then +50 per 8h. Greater than limit is FAIL; equal passes. Tests are NOT independent 8h bins.
 * Checkpoints use each worker's monotonic elapsed time; wall-clock/NTP adjustments do not influence their schedule. A new probe that completes after a boundary is excluded from the previous checkpoint.
@@ -40,3 +40,10 @@ Three commands (`show onu state`, `show onu time-stamp`, `show onu optical-info 
 * GUI Live Ping rows are red for FAIL, green for passed checkpoints, yellow for not-yet-completed first checkpoint, and separate from communication status.
 * CSV audit: `continuous_ping.csv` (per sample + decision), `continuous_ping_checkpoints.csv` (8h checkpoint outcomes), `continuous_ping_events.csv` (recovery and threshold failures), `continuous_ping_summary.csv` (final latched status, reason, time, totals).
 * ONU `cycles.jsonl` contains each DUT's current test_result and fail_reason. Existing Excel Ping fields remain the same two columns. No additional 4-packet ONU-cycle Ping has been reintroduced.
+
+## V1.0.19 factory changes
+* Exactly two prominently styled tabs on one navigation row; switching tabs does not restart the test.
+* The only pre-run operator selection is Expected DUT Count (1–16) and COM port; scan all reserved STATIC IPs 192.168.2.121–136, including nonadjacent active DUTs. ARP MAC↔GPON SN mapping uses strict DIRECT/OFFSET_MINUS_1 rules. Count mismatch, unreachable expected DUT, duplicate/ambiguous MAC or unexpected responsive IP blocks Run-in. Do not rely on ping scanning alone.
+* `04_Event_Log` compares last register/deregister values across cycles even when Phase State remains working; adds `PON RECONNECT / TIMESTAMP CHANGE` and preserves original OLT timestamp values. `events.jsonl` records the same event with PC observation time. OLT and PC clocks may not be synchronized.
+* Before first 8-hour checkpoint GUI shows `50 (8h PENDING)` instead of `0 (0h)`; historical FAIL rule unchanged.
+* The 8h/16h accumulation in V1.0.19 remains awaiting longer real DUT validation; these limits were regression-tested with simulated clocks.

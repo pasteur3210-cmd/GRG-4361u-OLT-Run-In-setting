@@ -161,6 +161,7 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
     cycles=[]
     roster=set()
     last_phases={}
+    last_timestamps={}
     last_pings={}
     status='COMPLETED'
     try:
@@ -228,6 +229,18 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                            'gpon_sn':item.get('gpon_sn',''), 'previous':prior,'current':phase}
                     events.append(event)
                 last_phases[onu]=phase
+                timestamps=(str(item.get('last_deregist') or '').strip(),
+                            str(item.get('last_regist') or '').strip())
+                before=last_timestamps.get(onu)
+                if before is not None and timestamps!=before and all(timestamps) and all(before):
+                    events.append({'time':check_time,'cycle':number,'onu_id':onu,
+                                   'gpon_sn':item.get('gpon_sn',''),
+                                   'kind':'PON_RECONNECT', 'previous_deregist':before[0],
+                                   'previous_regist':before[1],
+                                   'olt_deregist':timestamps[0], 'olt_regist':timestamps[1],
+                                   'pc_observed_time':check_time,
+                                   'note':'OLT clock and PC clock may be unsynchronized'})
+                if all(timestamps):last_timestamps[onu]=timestamps
             for onu_key, result_entry in sorted(ping_results.items(),key=lambda x:int(x[0])):
                 onu=int(onu_key)
                 current=result_entry.get('result','ERROR')

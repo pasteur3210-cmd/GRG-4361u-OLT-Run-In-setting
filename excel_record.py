@@ -134,6 +134,7 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
         summary.append(row)
     event_rows = [['Cycle','Check Time','ONU ID','GPON SN','Previous Phase','Current Phase','Event']]
     previous = {}
+    previous_timestamps = {}
     for i, cycle in enumerate(cycles, 1):
         for onu, item in sorted(cycle['onus'].items()):
             current = item.get('phase_state')
@@ -148,6 +149,16 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
                 event_rows.append([cycle.get('cycle',i),cycle['time'],onu,item.get('gpon_sn'),
                                    before,current,'RECOVERY' if current.lower()=='working' else 'STATE CHANGE'])
             previous[onu]=current
+            timestamps=(str(item.get('last_deregist') or '').strip(),
+                        str(item.get('last_regist') or '').strip())
+            old=previous_timestamps.get(onu)
+            if old is not None and timestamps != old and all(timestamps) and all(old):
+                event_rows.append([cycle.get('cycle',i),cycle['time'],onu,item.get('gpon_sn'),
+                                   f'DEREG {old[0]} / REG {old[1]}',
+                                   f'DEREG {timestamps[0]} / REG {timestamps[1]}',
+                                   'PON RECONNECT / TIMESTAMP CHANGE'])
+            if all(timestamps):
+                previous_timestamps[onu]=timestamps
     mapping_rows=[['ONU ID','GPON SN','DUT IP','WAN MAC (ARP)','LAN MAC (verified)','Match Type','Pre-Run Mapping']]
     for onu,entry in sorted(mapping.items()):
         mapping_rows.append([onu,entry['gpon_sn'],entry['ip'],entry['mac'],entry.get('lan_mac',''),entry.get('match_type',''),'MATCH'])
@@ -171,6 +182,7 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
              ['N/A', 'Device returned N/A; do not interpret as PASS'],
              ['Units', 'Rx/Tx are raw CLI values; confirm dBm with product specification'],
              ['Mapping rule', 'ARP MAC may equal LAN MAC (DIRECT), or LAN MAC + 1 (OFFSET_MINUS_1); match last 6 hex with GPON SN, unique only'],
+             ['PON Reconnect', 'Timestamp changes between cycles are recorded even when state is working; OLT clock and PC clock are distinct'],
              ['Source', 'show onu state + show onu time-stamp + show onu optical-info all']]
     time_zone = cycles[0].get('time_zone', 'NOT RECORDED') if cycles else 'NOT RECORDED'
     timezone_rows = [['Field', 'Value'],

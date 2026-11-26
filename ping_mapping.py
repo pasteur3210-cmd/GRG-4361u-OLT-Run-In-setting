@@ -223,3 +223,36 @@ def verify_mapping(ips, onu_states, *, ping_fn=None, arp_fn=None):
     if len(matched)!=len(ips) or len(matched)!=len(onu_states):
         errors.append('Mapping count mismatch; every configured DUT IP and discovered ONU must be uniquely mapped')
     return rows, matched, errors
+
+
+# Factory configuration: all DUTs use STATIC IPs, never DHCP.
+STATIC_IP_POOL = tuple(f'192.168.2.{i}' for i in range(121, 137))
+
+
+def discover_static_mapping(onu_states, expected_count, *, pool=STATIC_IP_POOL,
+                            ping_fn=None, arp_fn=None):
+    """Discover sparse static DUT IPs, then validate the complete OLT roster.
+
+    An unreachable IP is NOT silently considered absent: the operator supplied
+    expected_count and the OLT ONU count must both agree with verified matches.
+    Unmatched responding IPs in the reserved DUT pool are an ambiguity/error.
+    """
+    if not isinstance(expected_count, int) or isinstance(expected_count, bool) or not (1 <= expected_count <= 16):
+        raise ValueError('Expected DUT count must be 1..16')
+    ips=normalize_ips(pool)
+    if len(ips)!=16 or len(set(ips))!=16:
+        raise ValueError('Invalid static IP pool')
+    observed=ping_all(ips,count=1,ping_fn=ping_fn)
+    responsive=[ip for ip in ips if observed[ip]['result']=='PASS']
+    errors=[]
+    if len(onu_states)!=expected_count:
+        errors.append(f'EXPECTED {expected_count}, OLT reports {len(onu_states)} ONU; check missing/offline DUT')
+    if len(responsive)!=expected_count:
+        errors.append(f'EXPECTED {expected_count}, IP scan found {len(responsive)} responsive; no DUT may be silently skipped')
+    if not responsive:
+        return [],{},errors+['No responsive DUT IP in fixed pool']
+    rows,mapping,verify_errors=verify_mapping(responsive,onu_states,ping_fn=ping_fn,arp_fn=arp_fn)
+    errors.extend(verify_errors)
+    if len(mapping)!=expected_count:
+        errors.append(f'EXPECTED {expected_count}, verified mapping {len(mapping)}; MAPPING INCOMPLETE')
+    return rows,mapping,errors

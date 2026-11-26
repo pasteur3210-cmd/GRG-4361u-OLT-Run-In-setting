@@ -1,7 +1,7 @@
-# Factory SOP — V3600GS Connect V1.0.19
+# Factory SOP — V3600GS Connect V1.0.20
 1. Connect V3600GS Console USB and verify `USB-Enhanced-SERIAL` COM, close Tera Term.
 2. Set PC local timezone; plug into AC power. Set Windows 11 Power & battery > Screen, sleep & hibernate to keep system awake during the run, disable scheduled automatic restart, and verify USB/Network stability.
-3. Launch EXE, enter DUT IPs on same L2 network; click Verify Mapping. Only proceed on unique MATCH rows.
+3. Launch EXE; select Expected DUT Count (1–16), then Auto Scan and Verify Mapping against the fixed IP pool 192.168.2.121–136. Only proceed when every required DUT is a unique MATCH.
 4. Perform Single Check and verify ONU IDs, GPON SN, Phase State, Ping Loss and Alive Time including days (e.g. `1 00:04:03`).
 5. Set Loop Interval and Duration (0 = until Stop). In the Live Ping Monitor tab set Ping Interval (default 1 sec, range 0.5–60). Return to the first tab and start run. Close any open `ONU_Master_Record.xlsx` so the running EXE can replace it.
 6. Open the Live Ping Monitor tab to confirm realtime status, cumulative Failed/Loss % and **Max Consecutive Loss** (does not reset on recovery). After 2–3 ONU cycles, confirm `ONU_Master_Record.xlsx` and `cycles.jsonl` are growing. The live CSV is independent of Excel.
@@ -40,3 +40,11 @@
 - If the user presses Stop early, MONITORING remains unless an actual FAIL was already latched.
 - The 8/16/24h checkpoints are still required for the cumulative packet-loss rule.
 - Run-in status and per-IP final results are in `status.txt` and `continuous_ping_summary.csv` beside the normal Session records.
+
+## V1.0.20 Production Information
+1. On the first tab, enter **PO** (optional, initially blank), **Model Name** (defaults to `GRG-4361`; editable but cannot be blank), and **Operator** (optional, initially blank).
+2. Complete mapping before clicking Start. Production Information is captured at the moment Start is pressed and cannot be modified while the test is running.
+3. To verify traceability, open the run folder `production_info.json`, `ONU_Master_Record.xlsx` sheets `01_Loop_Summary` and `06_Run_Metadata`, and `continuous_ping_summary.csv`: all must contain identical PO / Model / Operator values.
+4. For the next batch, change the Production Information and perform a new mapping; previous Session files remain untouched.
+5. Navigate via the single large tab row: **dark blue + white text = active**, **light gray = inactive**. Switching between tabs does not start/stop any test.
+6. The 8h and 16h acceptance checkpoints still require corresponding wall-clock field tests; do not certify those conditions using a 1-hour run.

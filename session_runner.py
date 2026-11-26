@@ -11,6 +11,7 @@ from pathlib import Path
 from onu_parser import parse_onu_state, parse_time_stamp, parse_optical, merge_state_data
 from excel_record import export_cycles
 from continuous_ping import ContinuousPing
+from production_info import validate_production_info
 
 COMMANDS = [('show onu state', 'onu_state'),
             ('show onu time-stamp', 'onu_time_stamp'),
@@ -39,9 +40,16 @@ def append_journal(folder, cycle):
         os.fsync(f.fileno())
 
 
+def read_production_info(folder):
+    path=Path(folder)/'production_info.json'
+    if not path.exists():return {}
+    return json.loads(path.read_text(encoding='utf-8'))
+
+
 def rebuild_excel(folder):
     folder=Path(folder)
-    return export_cycles(folder/'ONU_Master_Record.xlsx',read_journal(folder), mapping=read_mapping(folder))
+    return export_cycles(folder/'ONU_Master_Record.xlsx',read_journal(folder),
+                         mapping=read_mapping(folder),production_info=read_production_info(folder))
 
 
 def read_mapping(folder):
@@ -134,7 +142,7 @@ def cycle_result(units,error, roster, ping_results=None, mapping=None):
 
 def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                 interval_min=5.0, duration_hr=72.0, notify=None, clock=None,
-                mapping=None, ping_fn=None, ping_interval=1.0):
+                mapping=None, ping_fn=None, ping_interval=1.0, production_info=None):
     """One run -> one folder, one XLSX; errors journaled and retry next cycle.
 
     ``interval_min`` is measured between planned cycle starts; if checks are
@@ -144,6 +152,10 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
         raise ValueError('Interval must be > 0 and duration must be >= 0')
     folder=Path(folder)
     folder.mkdir(parents=True,exist_ok=True)
+    production_info=production_info or {}
+    if production_info:
+        production_info=validate_production_info(production_info.get('PO',''),production_info.get('Model',''),production_info.get('Operator',''))
+        (folder/'production_info.json').write_text(json.dumps(production_info,ensure_ascii=False,indent=2),encoding='utf-8')
     notify=notify or (lambda *_: None)
     clock=clock or time
     start=clock.monotonic()
@@ -156,7 +168,7 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
     monitor=None
     if mapping:
         monitor=ContinuousPing(mapping,folder,stop_event,interval=ping_interval,ping_fn=ping_fn,
-                               callback=lambda onu,row:notify('PING_UPDATE',(onu,row)))
+                               callback=lambda onu,row:notify('PING_UPDATE',(onu,row)),production_info=production_info)
         monitor.start()
     cycles=[]
     roster=set()
@@ -209,7 +221,7 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             roster.update(units)
             result=cycle_result(units,err,roster,ping_results if mapping else None,mapping)
             cycle={'cycle':number,'time':check_time,'time_zone':time_zone,'onus':units,'error':err,'result':result,
-                   'ping':ping_results}
+                   'ping':ping_results,'production_info':production_info}
             # Journal is written before the spreadsheet to prevent data loss.
             append_journal(folder,cycle)
             cycles.append(cycle)
@@ -284,7 +296,7 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
         last_result=cycles[-1]['result'] if cycles else None
         if any(row.get('test_result')=='FAIL' for row in final_ping.values()):last_result='FAIL'
         summary={'status':status,'cycles':len(cycles),'folder':str(folder),
-                 'last_result':last_result, 'ping_final':final_ping,
+                 'last_result':last_result, 'production_info':production_info, 'ping_final':final_ping,
                  'ping_final_assessment':final_assessment}
         (folder/'status.txt').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
         notify('DONE',summary)

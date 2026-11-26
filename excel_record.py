@@ -79,7 +79,7 @@ def xlsx_bytes(sheets):
     return buf.getvalue()
 
 
-def build_rows(cycles, expected_onu_ids=None, mapping=None):
+def build_rows(cycles, expected_onu_ids=None, mapping=None, production_info=None):
     """Create one summary row per cycle; stable columns keyed by actual ONU ID.
 
     All ONU IDs across the input cycles share a fixed column mapping. A missing
@@ -87,6 +87,7 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
     Sparse IDs (e.g. 1, 3, 16) do not allocate fake ONU 2..15 columns.
     """
     mapping=mapping or {}
+    production_info=production_info or (cycles[0].get('production_info',{}) if cycles else {})
     known_ids = set(expected_onu_ids or []) | set(mapping)
     for cycle in cycles:
         known_ids.update(cycle['onus'])
@@ -98,6 +99,8 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
     columns = BASE_HEADERS[:]
     for onu in ids:
         columns.extend(f'ONU{onu}_{label}' for _, label in FIELDS)
+    if production_info:
+        columns.extend(['PO','Model Name','Operator'])
     summary = [columns]
     detail = [['Cycle', 'Check Time', 'ONU ID'] + [label for _, label in FIELDS]]
     for i, cycle in enumerate(cycles, 1):
@@ -131,6 +134,8 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
                             cycle.get('ping',{}).get(str(onu),{}).get('result','NOT CONFIGURED') if k == 'ping_result' else
                             (str(cycle.get('ping',{}).get(str(onu),{}).get('loss',0))+'/'+str(cycle.get('ping',{}).get(str(onu),{}).get('sent',0))) if k=='ping_loss' and cycle.get('ping',{}).get(str(onu),{}).get('sent') else None)
                            for k, _ in FIELDS)
+        if production_info:
+            row.extend([production_info.get('PO',''),production_info.get('Model',''),production_info.get('Operator','')])
         summary.append(row)
     event_rows = [['Cycle','Check Time','ONU ID','GPON SN','Previous Phase','Current Phase','Event']]
     previous = {}
@@ -190,12 +195,14 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
                      ['UTC Offset at first cycle', time_zone],
                      ['Timezone guidance', 'Check PC timezone before Night Run; offsets are recorded per cycle in cycles.jsonl'],
                      ['Session cycles', len(cycles)]]
+    if production_info:
+        timezone_rows.extend([['PO',production_info.get('PO','')],['Model Name',production_info.get('Model','')],['Operator',production_info.get('Operator','')]])
     return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_IP_Mapping', mapping_rows), ('04_Event_Log', event_rows), ('05_Field_Notes', notes), ('06_Run_Metadata', timezone_rows)]
 
-def export_cycles(path: Path, cycles: list[dict], mapping=None):
+def export_cycles(path: Path, cycles: list[dict], mapping=None, production_info=None):
     path=Path(path)
     path.parent.mkdir(parents=True,exist_ok=True)
-    data=xlsx_bytes(build_rows(cycles, mapping=mapping))
+    data=xlsx_bytes(build_rows(cycles, mapping=mapping, production_info=production_info))
     fd,tmp=tempfile.mkstemp(suffix='.xlsx',dir=str(path.parent))
     try:
         with os.fdopen(fd,'wb') as fp:fp.write(data)

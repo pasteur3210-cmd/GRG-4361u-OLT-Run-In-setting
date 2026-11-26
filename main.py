@@ -18,9 +18,10 @@ from onu_parser import parse_time_stamp, parse_optical, merge_state_data, parse_
 from excel_record import export_cycles
 from session_runner import run_session, rebuild_excel
 from ping_mapping import STATIC_IP_POOL, discover_static_mapping
+from production_info import validate_production_info
 from serial.tools import list_ports
 
-VERSION = "1.0.19.1"
+VERSION = "1.0.20"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -273,18 +274,31 @@ class GUI:
         self.verified_mapping = None
         self.verified_snapshot = None
         self.expected_count_var = tk.StringVar(value='2')
-        # One and only one tab navigation bar; larger selected/unselected tabs.
+        self.po_var = tk.StringVar(value='')
+        self.model_var = tk.StringVar(value='GRG-4361')
+        self.operator_var = tk.StringVar(value='')
+        # Windows themes can ignore ttk Notebook tab background.  Hide native
+        # tabs and render ONE high-contrast navigation bar with real buttons.
         style=ttk.Style(root)
-        style.configure('Runin.TNotebook.Tab',font=('Segoe UI',12,'bold'),padding=(25,13))
-        style.configure('Runin.TNotebook',tabposition='n')
-        style.map('Runin.TNotebook.Tab',foreground=[('selected','#064f95'),('!selected','#333333')],
-                  background=[('selected','#b9dcff'),('!selected','#e6eaf0')])
-        self.tabs=ttk.Notebook(root,style='Runin.TNotebook')
+        style.layout('RuninHidden.TNotebook.Tab', [])
+        self.nav=tk.Frame(root,bg='#dbe5f2',height=52)
+        self.nav.pack(fill='x')
+        self.nav.pack_propagate(False)
+        self.nav_btns=[]
+        for idx,label in enumerate(('① OLT & IP Setup / ONU Check','② Live Ping Monitor')):
+            btn=tk.Button(self.nav,text=label,font=('Segoe UI',12,'bold'),
+                          relief='flat',bd=0,highlightthickness=0,cursor='hand2',
+                          command=lambda i=idx:self.change_tab(i))
+            btn.pack(side='left',fill='y',padx=(5,0),ipadx=22)
+            self.nav_btns.append(btn)
+        self.tabs=ttk.Notebook(root,style='RuninHidden.TNotebook')
         self.tabs.pack(fill='both',expand=True)
         frm=ttk.Frame(self.tabs,padding=16)
-        self.tabs.add(frm,text='① OLT & IP Setup / ONU Check')
+        self.tabs.add(frm,text='OLT & IP Setup / ONU Check')
         self.ping_page=ttk.Frame(self.tabs,padding=16)
-        self.tabs.add(self.ping_page,text='② Live Ping Monitor')
+        self.tabs.add(self.ping_page,text='Live Ping Monitor')
+        self.tabs.bind('<<NotebookTabChanged>>',lambda _event:self.update_nav())
+        self.update_nav()
         self.ping_rows={}
         self.ping_status=tk.StringVar(value='Not monitoring — Start Run-in from OLT & IP Setup')
         self.ping_interval_var=tk.StringVar(value='1.0')
@@ -314,7 +328,7 @@ class GUI:
         ttk.Label(self.ping_page,text='FAIL latched: Max Consecutive Loss >= 6 immediately; cumulative loss > 50 at 8h, > 100 at 16h, > 150 at 24h, ...').pack(anchor='w',pady=8)
         self.ping_events=tk.Text(self.ping_page,height=6,state='disabled')
         self.ping_events.pack(fill='x')
-        ttk.Button(self.ping_page,text='Back to OLT & IP Setup',command=lambda:self.tabs.select(frm)).pack(anchor='w',pady=8)
+        ttk.Button(self.ping_page,text='Back to OLT & IP Setup',command=lambda:self.change_tab(0)).pack(anchor='w',pady=8)
         ttk.Label(frm,text='V3600GS ONU Run-in — Direct Serial',font=('Segoe UI',14,'bold')).pack(anchor='w')
         ttk.Label(frm,text='COM Port — USB-Enhanced-SERIAL preferred').pack(anchor='w',pady=(12,2))
         row=ttk.Frame(frm);row.pack(fill='x')
@@ -323,6 +337,16 @@ class GUI:
         self.refresh_button=ttk.Button(row,text='Refresh COM',command=self.refresh)
         self.refresh_button.pack(side='left',padx=8)
         ttk.Label(frm,text='Serial: 115200 / 8N1 | Login → Enable → Config → GPON 0/1').pack(anchor='w',pady=(10,4))
+        production=ttk.LabelFrame(frm,text='Production Information',padding=9)
+        production.pack(fill='x',pady=(4,8))
+        for label,var,width in (('PO',self.po_var,26),('Model Name',self.model_var,24),('Operator',self.operator_var,23)):
+            group=ttk.Frame(production);group.pack(side='left',padx=(0,18))
+            ttk.Label(group,text=label).pack(anchor='w')
+            entry=ttk.Entry(group,textvariable=var,width=width)
+            entry.pack(anchor='w')
+            if label=='PO':self.po_entry=entry
+            elif label=='Model Name':self.model_entry=entry
+            else:self.operator_entry=entry
         settings=ttk.LabelFrame(frm,text='Test Settings',padding=9)
         settings.pack(fill='x',pady=(4,8))
         modes=ttk.Frame(settings);modes.pack(fill='x')
@@ -371,6 +395,20 @@ class GUI:
         self.refresh()
         self.update_mode()
         root.after(100,self.poll)
+
+    def change_tab(self,index):
+        self.tabs.select(index)
+        self.update_nav()
+
+    def update_nav(self):
+        index=self.tabs.index(self.tabs.select())
+        for i,button in enumerate(self.nav_btns):
+            if i==index:
+                button.configure(bg='#0757a6',fg='#ffffff',activebackground='#064887',
+                                 activeforeground='#ffffff')
+            else:
+                button.configure(bg='#e5e9ef',fg='#313c4e',activebackground='#c1dafa',
+                                 activeforeground='#0757a6')
 
     def display(self,message):
         self.out.configure(state='normal')
@@ -460,7 +498,11 @@ class GUI:
             self.invalidate_mapping()
             messagebox.showerror('Mapping','Verify IP / MAC / GPON SN before Start.');return
         mapping={k:dict(v) for k,v in self.verified_mapping.items()}
-        loop=self.mode.get()=='loop'
+        try:
+            production_info=validate_production_info(self.po_var.get(),self.model_var.get(),self.operator_var.get())
+        except ValueError as exc:
+            messagebox.showerror('Production Information',str(exc));return
+        loop=self.mode.get()=='loop' 
         try:
             interval=float(self.interval_var.get()) if loop else 5.0
             duration=float(self.duration_var.get()) if loop else 0.0
@@ -484,6 +526,7 @@ class GUI:
         self.combo.configure(state='disabled')
         self.refresh_button.configure(state='disabled')
         self.expected_count_combo.configure(state='disabled')
+        for entry in (self.po_entry,self.model_entry,self.operator_entry):entry.configure(state='disabled')
         self.excel_btn.configure(state='disabled')
         self.last_excel=None
         self.update_mode()
@@ -495,6 +538,7 @@ class GUI:
         self.display('START | '+port+' | records: '+str(folder))
         logger.info('START|VERSION=%s|PORT=%s|MODE=%s|INTERVAL_MIN=%s|DURATION_HR=%s',
                     VERSION,port,'LOOP' if loop else 'SINGLE',interval,duration)
+        logger.info('PRODUCTION_INFO|PO=%s|MODEL=%s|OPERATOR=%s',production_info['PO'],production_info['Model'],production_info['Operator'])
         def worker():
             def notify(kind,msg):self.messages.put((kind,msg))
             try:
@@ -502,7 +546,7 @@ class GUI:
                                               on_stage=lambda stage:self.messages.put(('stage',stage)))
                 run_session(factory,folder,logger,self.stop_flag,loop=loop,
                             interval_min=interval,duration_hr=duration,notify=notify,mapping=mapping,
-                            ping_interval=ping_interval)
+                            ping_interval=ping_interval,production_info=production_info)
             except Exception as exc:
                 logger.exception('SESSION_ERROR')
                 self.messages.put(('DONE',{'status':'ERROR: '+str(exc),'cycles':0,
@@ -612,6 +656,7 @@ class GUI:
                     self.combo.configure(state='readonly')
                     self.refresh_button.configure(state='normal')
                     self.expected_count_combo.configure(state='readonly')
+                    for entry in (self.po_entry,self.model_entry,self.operator_entry):entry.configure(state='normal')
                     self.update_mode()
                     self.last_excel=Path(msg['folder'])/'ONU_Master_Record.xlsx'
                     if self.last_excel.is_file():self.excel_btn.configure(state='normal')

@@ -43,7 +43,8 @@ def ping_once(ip, timeout_ms=1000):
 
 
 class ContinuousPing:
-    def __init__(self,mapping,folder,stop_event, *, interval=1.0,ping_fn=None,callback=None, clock=None):
+    def __init__(self,mapping,folder,stop_event, *, interval=1.0,ping_fn=None,callback=None, clock=None, production_info=None):
+        self.production_info=dict(production_info or {})
         self.mapping={int(k):dict(v) for k,v in mapping.items()}
         self.folder=Path(folder)
         self.stop_event=stop_event
@@ -193,10 +194,11 @@ class ContinuousPing:
                 self._checkpoint_file.flush();os.fsync(self._checkpoint_file.fileno());self._checkpoint_file.close()
             with (self.folder/'continuous_ping_summary.csv').open('w',newline='',encoding='utf-8-sig') as f:
                 writer=csv.writer(f)
-                writer.writerow(['ONU ID','DUT IP','Latest Status','Sent','Success','Failed','Loss %','Max Consecutive Loss','Last Success','Last Failed','Test Result','Fail Reason','Fail Time','8h Checkpoints','Allowed Loss','Last Checkpoint Failed','Final Assessment'])
+                writer.writerow(['ONU ID','DUT IP','Latest Status','Sent','Success','Failed','Loss %','Max Consecutive Loss','Last Success','Last Failed','Test Result','Fail Reason','Fail Time','8h Checkpoints','Allowed Loss','Last Checkpoint Failed','Final Assessment','PO','Model Name','Operator'])
                 for onu,r in sorted(self.rows.items()):
                     writer.writerow([onu,r['ip'],r['status'],r['sent'],r['success'],r['failed'],
                                      round(r['failed']/r['sent']*100,5) if r['sent'] else '',
                                      r['max_consecutive'],r['last_success'],r['last_failed'],
                                      r['test_result'],r['fail_reason'],r['fail_time'],
-                                     r['checkpoints_completed'],r['allowed_loss'],r['checkpoint_failed'],self.final_assessment[onu]])
+                                     r['checkpoints_completed'],r['allowed_loss'],r['checkpoint_failed'],self.final_assessment[onu],
+                                     self.production_info.get('PO',''),self.production_info.get('Model',''),self.production_info.get('Operator','')])

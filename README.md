@@ -1,4 +1,4 @@
-# V3600GS Connect V1.0.19
+# V3600GS Connect V1.0.20
 Windows 11 direct Serial tool; no Tera Term required while running the compiled EXE. Auto COM selection, 115200 8N1, login, ONU state/time-stamp/optical queries, continuous multi-IP independent Ping, per-run Excel accumulation.
 
 ## Build
@@ -11,7 +11,7 @@ Select Expected DUT Count (1–16); Auto Scan checks the fixed static IP pool 19
 Do not open the active Excel during a run. Confirm Windows automatic Sleep and scheduled restart are disabled, the OLT/USB adapter remains powered, and local Windows timezone is correct before starting. Metadata records the first cycle UTC offset and JSONL stores per-cycle offsets. Use `cycles.jsonl` for recovery if Excel cannot be updated.
 
 ## Verification boundary
-125 automated unit/regression checks pass on the current development runtime; physical overnight stability, GitHub Windows Actions compile and US English Windows deployment remain field-gated.
+139 automated unit/regression checks pass on the current development runtime; physical overnight stability, GitHub Windows Actions compile and US English Windows deployment remain field-gated.
 
 ## V1.0.19 — Continuous Ping and two-page GUI
 
@@ -26,7 +26,7 @@ Do not open the active Excel during a run. Confirm Windows automatic Sleep and s
 
 ## Compatibility / limitation
 
-Run on Windows 11 with native Ping and direct Serial. GitHub Actions compiles using Python 3.11 and PyInstaller. This release builds on the 477-cycle V1.0.16 Night Run and 31-cycle V1.0.18 two-DUT field observations, with local regression tests; the compiled V1.0.19 EXE and sustained 16-IP live network monitoring still require Windows/OLT validation.
+Run on Windows 11 with native Ping and direct Serial. GitHub Actions compiles using Python 3.11 and PyInstaller. This release builds on the 477-cycle V1.0.16 Night Run and 31-cycle V1.0.18 two-DUT field observations, with local regression tests; the compiled V1.0.20 EXE and sustained 16-IP live network monitoring still require Windows/OLT validation.
 
 
 ## Multi-page ONU CLI safety (V1.0.19 updated build)
@@ -50,3 +50,10 @@ Three commands (`show onu state`, `show onu time-stamp`, `show onu optical-info 
 
 ### V1.0.19.1 timed-session hotfix
 A one-hour scheduled run now waits the full hour before ending Continuous Ping. A clean short run shows PASS upon completion with `SHORT_RUN_UNDER_8H` in `continuous_ping_summary.csv`; this is distinct from passing the 8-hour/16-hour cumulative loss checkpoints. Early manual Stop does not automatically convert MONITORING into PASS. See CHANGELOG in the Complete Package.
+
+## V1.0.20 — Production identification and high-contrast tabs
+* Three editable fields appear on **OLT & IP Setup / ONU Check** below the Serial/COM setup: **PO** (blank), **Model Name** (`GRG-4361` by default, can edit), and **Operator** (blank). Model Name must not be empty. Each field is limited to 100 characters without control characters.
+* The three values are captured and frozen at Start; they do not change when the operator edits the form after completion. They are persisted in `production_info.json`, the `production_info` field of every `cycles.jsonl` entry and `status.txt`, the first Excel sheet (three appended columns), Excel sheet `06_Run_Metadata`, and `continuous_ping_summary.csv` (three appended columns).
+* Rebuilding Excel from the original `cycles.jsonl` and session metadata retains those fields.
+* Exactly **one** top navigation group. Native Notebook tabs are hidden. The selected navigation button is **dark blue with white bold text**; inactive button is **light gray with dark text**, including on Windows themes that ignore ttk tab backgrounds.
+* V1.0.19.1's short-session completion, live Ping acceptance thresholds, PON reconnect event recording, fixed-IP discovery and multi-page CLI protection are unchanged. An overnight/8h/16h physical DUT validation is not replaced by unit tests.

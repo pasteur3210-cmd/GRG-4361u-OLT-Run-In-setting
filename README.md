@@ -47,3 +47,6 @@ Three commands (`show onu state`, `show onu time-stamp`, `show onu optical-info 
 * `04_Event_Log` compares last register/deregister values across cycles even when Phase State remains working; adds `PON RECONNECT / TIMESTAMP CHANGE` and preserves original OLT timestamp values. `events.jsonl` records the same event with PC observation time. OLT and PC clocks may not be synchronized.
 * Before first 8-hour checkpoint GUI shows `50 (8h PENDING)` instead of `0 (0h)`; historical FAIL rule unchanged.
 * The 8h/16h accumulation in V1.0.19 remains awaiting longer real DUT validation; these limits were regression-tested with simulated clocks.
+
+### V1.0.19.1 timed-session hotfix
+A one-hour scheduled run now waits the full hour before ending Continuous Ping. A clean short run shows PASS upon completion with `SHORT_RUN_UNDER_8H` in `continuous_ping_summary.csv`; this is distinct from passing the 8-hour/16-hour cumulative loss checkpoints. Early manual Stop does not automatically convert MONITORING into PASS. See CHANGELOG in the Complete Package.

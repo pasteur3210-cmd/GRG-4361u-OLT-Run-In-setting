@@ -55,3 +55,23 @@ def on_elapsed(row, elapsed_seconds, when):
                            allowed=allowed, checkpoint_result='PASS' if passed else 'FAIL',
                            session_result=row['test_result'], timestamp=when))
     return events
+
+
+def on_completed(row, when, *, completed):
+    """Finalize a session only when its planned test ran to completion.
+
+    A scheduled test shorter than the first 8h checkpoint can be assessed
+    against the immediate consecutive-loss rule, but does *not* certify the
+    8-hour cumulative-loss criterion. Manual Stop keeps MONITORING.
+    Latched FAIL remains FAIL permanently.
+    """
+    if row['test_result'] == 'FAIL':
+        return 'FAIL_LATCHED'
+    if not completed:
+        return 'STOPPED_BEFORE_COMPLETION'
+    if row.get('status') == 'ERROR' or row.get('sent', 0) == 0:
+        return 'NO_VALID_PING_DATA'
+    if row['test_result'] == 'MONITORING':
+        row['test_result'] = 'PASS'
+        return 'SHORT_RUN_UNDER_8H'
+    return 'CHECKPOINT_PASS'

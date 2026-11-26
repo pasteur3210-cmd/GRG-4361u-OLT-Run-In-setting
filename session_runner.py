@@ -164,6 +164,8 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
     last_timestamps={}
     last_pings={}
     status='COMPLETED'
+    final_ping={}
+    final_assessment={}
     try:
         while True:
             if stop_event.is_set():status='STOPPED BY USER';break
@@ -259,12 +261,15 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             next_start += interval_min*60
             if next_start < clock.monotonic():
                 next_start=clock.monotonic()  # Overrun: no overlapping cycles
-            if cutoff is not None and next_start>=cutoff:break
+            # Do NOT stop at the end of the last scheduled ONU query. Continue
+            # Continuous Ping until the full configured duration elapses.
         # Complete Ping CSV / summary before reporting Session DONE to GUI.
         if monitor is not None:
             try:
-                monitor.stop()
-                logger.info('CONTINUOUS_PING_STOPPED')
+                monitor.stop(completed=(status=='COMPLETED' and bool(cycles)))
+                logger.info('CONTINUOUS_PING_STOPPED|FINAL=%s',monitor.final_assessment)
+                final_ping=monitor.cycle_snapshot()
+                final_assessment=dict(monitor.final_assessment)
                 monitor=None
             except Exception as exc:
                 logger.exception('CONTINUOUS_PING_STOP_FAILED')
@@ -276,8 +281,11 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                 logger.exception('FINAL_EXCEL_SAVE_FAILED')
                 if status=='COMPLETED':status='SAVE ERROR'
         elif status=='COMPLETED':status='NO DATA'
+        last_result=cycles[-1]['result'] if cycles else None
+        if any(row.get('test_result')=='FAIL' for row in final_ping.values()):last_result='FAIL'
         summary={'status':status,'cycles':len(cycles),'folder':str(folder),
-                 'last_result':cycles[-1]['result'] if cycles else None}
+                 'last_result':last_result, 'ping_final':final_ping,
+                 'ping_final_assessment':final_assessment}
         (folder/'status.txt').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
         notify('DONE',summary)
         return summary

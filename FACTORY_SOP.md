@@ -33,3 +33,10 @@
 5. Start Run-in after verification. The second **Live Ping Monitor** tab shares the current session; it does not open a separate Serial connection or modify the Excel directly.
 6. In Excel `04_Event_Log`, check timestamp-change / PON reconnect history separately from current `working` state. OLT/PC clocks can differ; do not interpret their raw timestamps as a unified clock.
 7. Before the first 8-hour checkpoint, `Allowed Loss` shows `50 (8h PENDING)`; cumulative checkpoint FAIL is evaluated at elapsed 8/16/24 hours, while ≥6 consecutive losses fail immediately.
+
+## V1.0.19.1: Short scheduled Run-in result
+- A test set for 1 hour must keep Continuous Ping running for the full configured 1 hour, even when the last ONU CLI cycle (for example the 12th 5-minute check) completes earlier.
+- At successful scheduled completion a row without any FAIL trigger may show `PASS`, but confirm `Final Assessment=SHORT_RUN_UNDER_8H` in `continuous_ping_summary.csv`; it does **not** constitute 8-hour loss-limit validation.
+- If the user presses Stop early, MONITORING remains unless an actual FAIL was already latched.
+- The 8/16/24h checkpoints are still required for the cumulative packet-loss rule.
+- Run-in status and per-IP final results are in `status.txt` and `continuous_ping_summary.csv` beside the normal Session records.

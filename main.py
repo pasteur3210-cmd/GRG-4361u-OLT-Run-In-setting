@@ -20,7 +20,7 @@ from session_runner import run_session, rebuild_excel
 from ping_mapping import STATIC_IP_POOL, discover_static_mapping
 from serial.tools import list_ports
 
-VERSION = "1.0.19"
+VERSION = "1.0.19.1"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -618,7 +618,7 @@ class GUI:
                     state=msg['status']
                     self.state.set(f'{state} — {msg["cycles"]} cycles; last result: {msg["last_result"]}')
                     self.display(self.state.get())
-                    self.ping_status.set(f'Monitor stopped — {len(self.ping_rows)} IP; summary saved in Session folder')
+                    self.ping_status.set(f'Monitor stopped — {len(self.ping_rows)} IP; final results saved. Under 8h = short-run only (not 8h certified).')
         except queue.Empty:pass
         self.root.after(100,self.poll)
 

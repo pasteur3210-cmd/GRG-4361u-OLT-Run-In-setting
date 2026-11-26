@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from ping_judgement import initial_fields, on_sample, on_elapsed
+from ping_judgement import initial_fields, on_sample, on_elapsed, on_completed
 
 FIELDS = ['Timestamp','UTC Offset','ONU ID','DUT IP','Result','RTT ms','Consecutive Loss','Max Consecutive Loss','Total Sent','Total Failed','Test Result','Fail Reason','8h Checkpoints','Allowed Loss']
 
@@ -59,6 +59,8 @@ class ContinuousPing:
         self._local_stop=threading.Event()
         self._threads=[]
         self._started=False
+        self._start_monotonic=None
+        self.final_assessment={}
         self._ping_file=None
         self._event_file=None
         self._csv=None
@@ -80,6 +82,7 @@ class ContinuousPing:
         if self._checkpoint_file.tell()==0:self._checkpoint_csv.writerow(['Timestamp','ONU ID','DUT IP','Elapsed Hours','Cumulative Failed','Allowed Loss','Checkpoint Result','Session Result'])
         self._ping_file.flush();self._event_file.flush();self._checkpoint_file.flush()
         self._started=True
+        self._start_monotonic=self.clock.monotonic()
         for onu,entry in sorted(self.mapping.items()):
             t=threading.Thread(target=self._work,args=(onu,entry['ip']),daemon=True,name=f'ping-{onu}')
             self._threads.append(t);t.start()
@@ -88,7 +91,7 @@ class ContinuousPing:
         start_of_outage=None
         outage_monotonic=None
         next_start=self.clock.monotonic()
-        run_started=next_start
+        run_started=self._start_monotonic
         while not self.stop_event.is_set() and not self._local_stop.is_set():
             current=self.clock.monotonic()
             if current<next_start:
@@ -162,12 +165,26 @@ class ContinuousPing:
                               'allowed_loss':row['allowed_loss'],'checkpoints_completed':row['checkpoints_completed']}
         return result
 
-    def stop(self):
+    def stop(self, *, completed=False):
         self._local_stop.set()
         for thread in self._threads:thread.join(timeout=5)
         if any(t.is_alive() for t in self._threads):
             raise RuntimeError('Ping worker still running; refusing to close CSV')
         with self.lock:
+            when=dt.datetime.now().astimezone().isoformat(timespec='seconds')
+            # A boundary can occur exactly at the configured end time, before
+            # any worker gets to process another packet. Apply it here too.
+            for onu,row in sorted(self.rows.items()):
+                elapsed=self.clock.monotonic()-self._start_monotonic
+                for check in on_elapsed(row,elapsed,when):
+                    self._checkpoint_csv.writerow([when,onu,row['ip'],check['checkpoint_hours'],
+                                                 check['failed'],check['allowed'],
+                                                 check['checkpoint_result'],check['session_result']])
+                note=on_completed(row,when,completed=completed)
+                self.final_assessment[onu]=note
+                try:self.callback(onu,dict(row))
+                except Exception:pass
+            self._checkpoint_file.flush()
             if self._ping_file and not self._ping_file.closed:
                 self._ping_file.flush();os.fsync(self._ping_file.fileno());self._ping_file.close()
             if self._event_file and not self._event_file.closed:
@@ -176,10 +193,10 @@ class ContinuousPing:
                 self._checkpoint_file.flush();os.fsync(self._checkpoint_file.fileno());self._checkpoint_file.close()
             with (self.folder/'continuous_ping_summary.csv').open('w',newline='',encoding='utf-8-sig') as f:
                 writer=csv.writer(f)
-                writer.writerow(['ONU ID','DUT IP','Latest Status','Sent','Success','Failed','Loss %','Max Consecutive Loss','Last Success','Last Failed','Test Result','Fail Reason','Fail Time','8h Checkpoints','Allowed Loss','Last Checkpoint Failed'])
+                writer.writerow(['ONU ID','DUT IP','Latest Status','Sent','Success','Failed','Loss %','Max Consecutive Loss','Last Success','Last Failed','Test Result','Fail Reason','Fail Time','8h Checkpoints','Allowed Loss','Last Checkpoint Failed','Final Assessment'])
                 for onu,r in sorted(self.rows.items()):
                     writer.writerow([onu,r['ip'],r['status'],r['sent'],r['success'],r['failed'],
                                      round(r['failed']/r['sent']*100,5) if r['sent'] else '',
                                      r['max_consecutive'],r['last_success'],r['last_failed'],
                                      r['test_result'],r['fail_reason'],r['fail_time'],
-                                     r['checkpoints_completed'],r['allowed_loss'],r['checkpoint_failed']])
+                                     r['checkpoints_completed'],r['allowed_loss'],r['checkpoint_failed'],self.final_assessment[onu]])

@@ -13,8 +13,9 @@ import subprocess
 import sys
 import threading
 import time
+from ping_judgement import initial_fields, on_sample, on_elapsed
 
-FIELDS = ['Timestamp','UTC Offset','ONU ID','DUT IP','Result','RTT ms','Consecutive Loss','Max Consecutive Loss','Total Sent','Total Failed']
+FIELDS = ['Timestamp','UTC Offset','ONU ID','DUT IP','Result','RTT ms','Consecutive Loss','Max Consecutive Loss','Total Sent','Total Failed','Test Result','Fail Reason','8h Checkpoints','Allowed Loss']
 
 
 def ping_once(ip, timeout_ms=1000):
@@ -53,7 +54,7 @@ class ContinuousPing:
         self.clock=clock or time
         self.lock=threading.RLock()
         self.rows={i:dict(onu_id=i,ip=v['ip'],status='INITIALIZING',sent=0,success=0,failed=0,
-                          consecutive=0,max_consecutive=0,rtt_ms=None,last_success='',last_failed='',error='')
+                          consecutive=0,max_consecutive=0,rtt_ms=None,last_success='',last_failed='',error='',**initial_fields())
                    for i,v in self.mapping.items()}
         self._local_stop=threading.Event()
         self._threads=[]
@@ -62,17 +63,22 @@ class ContinuousPing:
         self._event_file=None
         self._csv=None
         self._event_csv=None
+        self._checkpoint_file=None
+        self._checkpoint_csv=None
 
     def start(self):
         if self._started:raise RuntimeError('Monitor already started')
         self.folder.mkdir(parents=True,exist_ok=True)
         self._ping_file=(self.folder/'continuous_ping.csv').open('a',newline='',encoding='utf-8-sig')
         self._event_file=(self.folder/'continuous_ping_events.csv').open('a',newline='',encoding='utf-8-sig')
+        self._checkpoint_file=(self.folder/'continuous_ping_checkpoints.csv').open('a',newline='',encoding='utf-8-sig')
         self._csv=csv.writer(self._ping_file)
         self._event_csv=csv.writer(self._event_file)
+        self._checkpoint_csv=csv.writer(self._checkpoint_file)
         if self._ping_file.tell()==0:self._csv.writerow(FIELDS)
         if self._event_file.tell()==0:self._event_csv.writerow(['Start','Recovery','ONU ID','DUT IP','Consecutive Loss','Elapsed Seconds','Status'])
-        self._ping_file.flush();self._event_file.flush()
+        if self._checkpoint_file.tell()==0:self._checkpoint_csv.writerow(['Timestamp','ONU ID','DUT IP','Elapsed Hours','Cumulative Failed','Allowed Loss','Checkpoint Result','Session Result'])
+        self._ping_file.flush();self._event_file.flush();self._checkpoint_file.flush()
         self._started=True
         for onu,entry in sorted(self.mapping.items()):
             t=threading.Thread(target=self._work,args=(onu,entry['ip']),daemon=True,name=f'ping-{onu}')
@@ -82,6 +88,7 @@ class ContinuousPing:
         start_of_outage=None
         outage_monotonic=None
         next_start=self.clock.monotonic()
+        run_started=next_start
         while not self.stop_event.is_set() and not self._local_stop.is_set():
             current=self.clock.monotonic()
             if current<next_start:
@@ -95,6 +102,17 @@ class ContinuousPing:
                 ok,rtt,error=None,None,str(exc)
             with self.lock:
                 row=self.rows[onu]
+                # Evaluate completed 8h periods before accounting for this new sample.
+                for check in on_elapsed(row,self.clock.monotonic()-run_started,when):
+                    self._checkpoint_csv.writerow([when,onu,ip,check['checkpoint_hours'],
+                                                  check['failed'],check['allowed'],
+                                                  check['checkpoint_result'],check['session_result']])
+                    self._checkpoint_file.flush()
+                    if (check['checkpoint_result']=='FAIL' and
+                        row['fail_reason']=='CUMULATIVE_LOSS_LIMIT_EXCEEDED' and
+                        row['fail_time']==when):
+                        self._event_csv.writerow([when,'',onu,ip,check['failed'],0,'RUN_IN_FAIL_CUMULATIVE'])
+                        self._event_file.flush()
                 old=row['consecutive']
                 if ok is True:
                     row['status']='ONLINE';row['success']+=1;row['sent']+=1
@@ -108,6 +126,9 @@ class ContinuousPing:
                     row['status']='TIMEOUT';row['failed']+=1;row['sent']+=1;row['rtt_ms']=None
                     row['consecutive']+=1;row['max_consecutive']=max(row['max_consecutive'],row['consecutive'])
                     row['last_failed']=when
+                    if on_sample(row,when):
+                        self._event_csv.writerow([when,'',onu,ip,row['consecutive'],0,'RUN_IN_FAIL_CONSECUTIVE'])
+                        self._event_file.flush()
                     if not old:
                         start_of_outage=when;outage_monotonic=self.clock.monotonic()
                 else:
@@ -115,7 +136,8 @@ class ContinuousPing:
                     row['status']='ERROR';row['error']=error;row['rtt_ms']=None
                 self._csv.writerow([when,timestamp.strftime('%z'),onu,ip,row['status'],
                                    '' if rtt is None else rtt,row['consecutive'],row['max_consecutive'],
-                                   row['sent'],row['failed']])
+                                   row['sent'],row['failed'],row['test_result'],row['fail_reason'],
+                                   row['checkpoints_completed'],row['allowed_loss']])
                 self._ping_file.flush()
                 try:self.callback(onu,dict(row))
                 except Exception:pass
@@ -135,7 +157,9 @@ class ContinuousPing:
         for onu,row in self.snapshot().items():
             result[str(onu)]={'result':row['status'],'loss':row['failed'],
                               'sent':row['sent'],'received':row['success'],
-                              'max_consecutive':row['max_consecutive'],'error':row['error']}
+                              'max_consecutive':row['max_consecutive'],'error':row['error'],
+                              'test_result':row['test_result'],'fail_reason':row['fail_reason'],
+                              'allowed_loss':row['allowed_loss'],'checkpoints_completed':row['checkpoints_completed']}
         return result
 
     def stop(self):
@@ -148,10 +172,14 @@ class ContinuousPing:
                 self._ping_file.flush();os.fsync(self._ping_file.fileno());self._ping_file.close()
             if self._event_file and not self._event_file.closed:
                 self._event_file.flush();os.fsync(self._event_file.fileno());self._event_file.close()
+            if self._checkpoint_file and not self._checkpoint_file.closed:
+                self._checkpoint_file.flush();os.fsync(self._checkpoint_file.fileno());self._checkpoint_file.close()
             with (self.folder/'continuous_ping_summary.csv').open('w',newline='',encoding='utf-8-sig') as f:
                 writer=csv.writer(f)
-                writer.writerow(['ONU ID','DUT IP','Latest Status','Sent','Success','Failed','Loss %','Max Consecutive Loss','Last Success','Last Failed'])
+                writer.writerow(['ONU ID','DUT IP','Latest Status','Sent','Success','Failed','Loss %','Max Consecutive Loss','Last Success','Last Failed','Test Result','Fail Reason','Fail Time','8h Checkpoints','Allowed Loss','Last Checkpoint Failed'])
                 for onu,r in sorted(self.rows.items()):
                     writer.writerow([onu,r['ip'],r['status'],r['sent'],r['success'],r['failed'],
                                      round(r['failed']/r['sent']*100,5) if r['sent'] else '',
-                                     r['max_consecutive'],r['last_success'],r['last_failed']])
+                                     r['max_consecutive'],r['last_success'],r['last_failed'],
+                                     r['test_result'],r['fail_reason'],r['fail_time'],
+                                     r['checkpoints_completed'],r['allowed_loss'],r['checkpoint_failed']])

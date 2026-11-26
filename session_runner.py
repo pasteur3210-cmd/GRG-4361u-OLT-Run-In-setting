@@ -121,7 +121,9 @@ def check_cycle(client, folder, number, logger):
 def cycle_result(units,error, roster, ping_results=None, mapping=None):
     if not units or not any(u.get('phase_state') for u in units.values()): return 'ERROR'
     if any(u.get('status')=='FAIL' for u in units.values()): return 'FAIL'
-    if ping_results is not None and any(x.get('result')=='TIMEOUT' for x in ping_results.values()): return 'FAIL'
+    # Live packet TIMEOUT alone is not a Run-in FAIL; use latched acceptance rule.
+    if ping_results is not None and any(x.get('test_result')=='FAIL' for x in ping_results.values()): return 'FAIL'
+    if ping_results is not None and any(x.get('result')=='TIMEOUT' and 'test_result' not in x for x in ping_results.values()): return 'FAIL'
     if ping_results is not None and (len(ping_results)!=len(mapping or {}) or any(x.get('result') in ('ERROR','INITIALIZING') for x in ping_results.values())): return 'INCOMPLETE'
     if mapping and (set(units)!=set(mapping) or any(i not in units or units[i].get('gpon_sn','').lower()!=data['gpon_sn'].lower() for i,data in mapping.items())):return 'INCOMPLETE'
     if error or any(i not in units for i in roster) or any(

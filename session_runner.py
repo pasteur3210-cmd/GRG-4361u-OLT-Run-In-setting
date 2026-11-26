@@ -10,8 +10,7 @@ import time
 from pathlib import Path
 from onu_parser import parse_onu_state, parse_time_stamp, parse_optical, merge_state_data
 from excel_record import export_cycles
-from ping_mapping import ping_all
-import concurrent.futures
+from continuous_ping import ContinuousPing
 
 COMMANDS = [('show onu state', 'onu_state'),
             ('show onu time-stamp', 'onu_time_stamp'),
@@ -88,8 +87,32 @@ def check_cycle(client, folder, number, logger):
             parsed[key]={}
             errors.append(f'{key} parse: {exc}')
             logger.warning('PARSE_WARNING|CYCLE=%s|%s',number,exc)
-    units=merge_state_data(parsed.get('onu_state',{}),parsed.get('onu_time_stamp',{}),
-                           parsed.get('onu_optical_info',{}))
+    # Fail-closed validation across all three independent CLI responses.
+    # Some offline ONUs legitimately lack optical values; only demand complete
+    # optical metrics for ONUs whose *state* is working.
+    state=parsed.get('onu_state',{})
+    stamp=parsed.get('onu_time_stamp',{})
+    optical=parsed.get('onu_optical_info',{})
+    if state:
+        missing_stamp=set(state)-set(stamp)
+        extra_stamp=set(stamp)-set(state)
+        if missing_stamp or extra_stamp:
+            errors.append(f'TIMESTAMP ONU ID mismatch: missing={sorted(missing_stamp)}, extra={sorted(extra_stamp)}')
+        extra_optical=set(optical)-set(state)
+        if extra_optical:
+            errors.append(f'OPTICAL unexpected ONU ID: {sorted(extra_optical)}')
+        for onu_id, unit in sorted(state.items()):
+            if unit.get('phase_state','').lower()!='working':
+                continue
+            values=optical.get(onu_id)
+            if values is None:
+                errors.append(f'OPTICAL missing working ONU ID {onu_id}')
+                continue
+            missing=[field for field in ('rx','tx','voltage','current','temperature')
+                     if values.get(field) is None]
+            if missing:
+                errors.append(f'OPTICAL incomplete working ONU ID {onu_id}: {",".join(missing)}')
+    units=merge_state_data(state,stamp,optical)
     if not parsed.get('onu_state'):
         errors.append('No valid ONU state available; cannot determine Online/Offline')
     return units, '; '.join(errors)
@@ -98,8 +121,8 @@ def check_cycle(client, folder, number, logger):
 def cycle_result(units,error, roster, ping_results=None, mapping=None):
     if not units or not any(u.get('phase_state') for u in units.values()): return 'ERROR'
     if any(u.get('status')=='FAIL' for u in units.values()): return 'FAIL'
-    if ping_results is not None and any(x.get('result')=='FAIL' for x in ping_results.values()): return 'FAIL'
-    if ping_results is not None and (len(ping_results)!=len(mapping or {}) or any(x.get('result')=='ERROR' for x in ping_results.values())): return 'INCOMPLETE'
+    if ping_results is not None and any(x.get('result')=='TIMEOUT' for x in ping_results.values()): return 'FAIL'
+    if ping_results is not None and (len(ping_results)!=len(mapping or {}) or any(x.get('result') in ('ERROR','INITIALIZING') for x in ping_results.values())): return 'INCOMPLETE'
     if mapping and (set(units)!=set(mapping) or any(i not in units or units[i].get('gpon_sn','').lower()!=data['gpon_sn'].lower() for i,data in mapping.items())):return 'INCOMPLETE'
     if error or any(i not in units for i in roster) or any(
         u.get('status')!='PASS' or u.get('data_flag')!='OK' for u in units.values()
@@ -109,7 +132,7 @@ def cycle_result(units,error, roster, ping_results=None, mapping=None):
 
 def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                 interval_min=5.0, duration_hr=72.0, notify=None, clock=None,
-                mapping=None, ping_fn=None):
+                mapping=None, ping_fn=None, ping_interval=1.0):
     """One run -> one folder, one XLSX; errors journaled and retry next cycle.
 
     ``interval_min`` is measured between planned cycle starts; if checks are
@@ -128,6 +151,11 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
     mapping=mapping or {}
     if mapping:
         save_mapping(folder,mapping)
+    monitor=None
+    if mapping:
+        monitor=ContinuousPing(mapping,folder,stop_event,interval=ping_interval,ping_fn=ping_fn,
+                               callback=lambda onu,row:notify('PING_UPDATE',(onu,row)))
+        monitor.start()
     cycles=[]
     roster=set()
     last_phases={}
@@ -150,10 +178,8 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             time_zone=time_zone[:3]+':'+time_zone[3:]
             notify('CHECKING',f'Cycle {number} checking ONU...')
             units={};err='';ping_results={}
-            # Start Ping in parallel with Serial ONU CLI; only one Serial caller.
-            ping_pool=concurrent.futures.ThreadPoolExecutor(max_workers=1) if mapping else None
-            ping_future=(ping_pool.submit(ping_all,[m['ip'] for m in mapping.values()],ping_fn=ping_fn)
-                         if ping_pool else None)
+            # Continuous Ping runs independently throughout the session.
+            # Never execute a second batch of four pings from the ONU cycle.
             try:
                 if client is None:
                     client=client_factory()
@@ -168,21 +194,8 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
                 logger.exception('CYCLE_ERROR|%s|%s',number,err)
                 if client is not None:
                     client.close();client=None
-            if ping_future:
-                try:
-                    by_ip=ping_future.result()
-                    ping_results={str(onu): {k:v for k,v in by_ip[entry['ip']].items() if k!='raw'}
-                                  for onu,entry in mapping.items()}
-                    rawping=folder/'raw_ping'
-                    rawping.mkdir(parents=True,exist_ok=True)
-                    for onu,entry in mapping.items():
-                        (rawping/f'Loop_{number:04d}_ONU{onu}.log').write_text(
-                            by_ip[entry['ip']].get('raw',''),encoding='utf-8')
-                except Exception as exc:
-                    logger.exception('PING_ERROR|CYCLE=%s',number)
-                    err+='; '+str(exc)
-                finally:
-                    ping_pool.shutdown(wait=True)
+            if monitor:
+                ping_results=monitor.cycle_snapshot()
             if stop_event.is_set():
                 # Preserve the fully collected cycle even if Stop was pressed
                 # during CLI/Ping processing. The next iteration will exit.
@@ -195,8 +208,10 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             # Journal is written before the spreadsheet to prevent data loss.
             append_journal(folder,cycle)
             cycles.append(cycle)
+            excel_saved=False
             try:
                 rebuild_excel(folder)
+                excel_saved=True
                 logger.info('EXCEL_SAVED|CYCLE=%s|RESULT=%s|ONU=%s',number,result,len(units))
             except Exception as exc:
                 logger.exception('EXCEL_SAVE_FAILED|CYCLE=%s',number)
@@ -224,12 +239,21 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             if events:
                 with (folder/'events.jsonl').open('a',encoding='utf-8') as ef:
                     for event in events:ef.write(json.dumps(event,ensure_ascii=False)+'\n')
-            notify('CYCLE',f'Cycle {number} | {result} | {len(units)} ONU | Excel updated')
+            notify('CYCLE',f'Cycle {number} | {result} | {len(units)} ONU | '+('Excel updated' if excel_saved else 'Excel SAVE FAILED; JSONL retained'))
             if not loop:break
             next_start += interval_min*60
             if next_start < clock.monotonic():
                 next_start=clock.monotonic()  # Overrun: no overlapping cycles
             if cutoff is not None and next_start>=cutoff:break
+        # Complete Ping CSV / summary before reporting Session DONE to GUI.
+        if monitor is not None:
+            try:
+                monitor.stop()
+                logger.info('CONTINUOUS_PING_STOPPED')
+                monitor=None
+            except Exception as exc:
+                logger.exception('CONTINUOUS_PING_STOP_FAILED')
+                if status=='COMPLETED':status='PING SAVE ERROR'
         # A missing XLSX due to transient file lock may be recoverable after close.
         if cycles:
             try: rebuild_excel(folder)
@@ -244,3 +268,6 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
         return summary
     finally:
         if client is not None:client.close()
+        if monitor is not None:
+            try:monitor.stop()
+            except Exception:logger.exception('PING_MONITOR_STOP_ERROR')

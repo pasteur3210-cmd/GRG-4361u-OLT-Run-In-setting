@@ -20,7 +20,7 @@ from session_runner import run_session, rebuild_excel
 from ping_mapping import normalize_ips, verify_mapping
 from serial.tools import list_ports
 
-VERSION = "1.0.16"
+VERSION = "1.0.17"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -142,13 +142,27 @@ class SerialLogin:
             self.close()
 
     def command(self, cmd, timeout=25):
-        """Capture until complete GPON prompt; reject partial/truncated output."""
+        """Capture a complete multipage CLI response, or fail closed.
+
+        Pagination may arrive fragmented across serial.read calls, with CR,
+        backspaces or ANSI highlighting around the More prompt.  A CLI response
+        is complete only when its own final GPON prompt is observed after all
+        page prompts have been acknowledged.  Never return a partial page.
+        """
+        from onu_parser import normalize_terminal_output
         self.stage('SEND_'+cmd.upper().replace(' ','_').replace('-','_'))
         self.write(cmd)
         deadline=time.monotonic()+timeout
         result=''
-        more=re.compile(r'(?:--\s*more\s*--|--More--)',re.I)
-        prompt=re.compile(r'(?:^|[\r\n])\s*gpon-olt\(config-pon-0/1\)#\s*$',re.I)
+        # Known terminal pagers; intentionally restrict matches to the screen
+        # tail so text in a table does not trigger an unwanted space.
+        more=re.compile(
+            r'(?:--+\s*more\s*--+|<[- ]*more[- ]*>|'
+            r'press\s+(?:any\s+key|(?:the\s+)?space(?:\s+key)?)\s+to\s+continue|'
+            r'more\s*:\s*)\s*$', re.I)
+        prompt=re.compile(r'(?:^|\n)\s*gpon-olt\(config-pon-0/1\)#\s*$',re.I)
+        pages=0
+        pager_active=False
         while time.monotonic()<deadline:
             if self.stop.is_set():raise LoginError('User stopped')
             b=self.link.read(4096)
@@ -156,15 +170,30 @@ class SerialLogin:
             text=safe_ascii(b)
             result+=text
             self.log.info('CLI_RX|%s|%s',cmd,len(b))
-            if len(result)>2000000:raise LoginError('CLI output exceeded 2 MB')
-            if more.search(result[-120:]):
-                self.link.write(b' ')
-                self.link.flush()
-                result=more.sub('',result)
-            if prompt.search(result):
+            if len(result)>2000000:raise LoginError('CLI output exceeded 2 MB after '+cmd)
+            # Terminal normalization handles ESC[nC, ESC[K, CR and backspace.
+            normalized=normalize_terminal_output(result)
+            tail=normalized[-500:].rstrip()
+            matched=more.search(tail)
+            if matched:
+                # Wait for pager marker to finish arriving; while waiting for
+                # more data the input buffer is unchanged.  One acknowledgement
+                # per distinct detected marker occurrence.
+                if not pager_active:
+                    pages+=1
+                    if pages>200:raise LoginError('CLI pager exceeded 200 pages after '+cmd)
+                    self.link.write(b' ')
+                    self.link.flush()
+                    self.log.info('CLI_PAGE_ADVANCE|%s|PAGE=%s',cmd,pages)
+                    pager_active=True
+                # Keep history unchanged: normalized output may still contain
+                # pager text, but parsers match only real ONU rows/blocks.
+                continue
+            pager_active=False
+            if prompt.search(normalized):
                 self.stage('CLI_COMPLETE_'+cmd.upper().replace(' ','_').replace('-','_'))
                 return result
-        raise LoginError('Timeout waiting for CLI prompt after '+cmd)
+        raise LoginError('Timeout/incomplete multipage CLI response after '+cmd)
 
     def _login_sequence(self):
         self.stage('SEND_WAKEUP')
@@ -230,7 +259,7 @@ class GUI:
     def __init__(self, root):
         self.root = root
         root.title('V3600GS Connect V'+VERSION+' — ONU Run-in')
-        root.geometry('1100x780')
+        root.geometry('1190x790')
         self.messages = queue.Queue()
         self.stop_flag = threading.Event()
         self.running = False
@@ -244,8 +273,39 @@ class GUI:
         self.verified_mapping = None
         self.verified_snapshot = None
         self.ip_text = None
-        frm=ttk.Frame(root,padding=16)
-        frm.pack(fill='both',expand=True)
+        self.tabs=ttk.Notebook(root)
+        self.tabs.pack(fill='both',expand=True)
+        frm=ttk.Frame(self.tabs,padding=16)
+        self.tabs.add(frm,text='OLT & IP Setup / ONU Check')
+        self.ping_page=ttk.Frame(self.tabs,padding=16)
+        self.tabs.add(self.ping_page,text='Live Ping Monitor')
+        self.ping_rows={}
+        self.ping_status=tk.StringVar(value='Not monitoring — Start Run-in from OLT & IP Setup')
+        self.ping_interval_var=tk.StringVar(value='1.0')
+        ttk.Label(self.ping_page,text='Continuous Ping Monitor',font=('Segoe UI',15,'bold')).pack(anchor='w',pady=(2,6))
+        pcontrols=ttk.Frame(self.ping_page)
+        pcontrols.pack(fill='x',pady=(0,12))
+        ttk.Label(pcontrols,textvariable=self.ping_status,foreground='#005ea8').pack(side='left')
+        ttk.Label(pcontrols,text='Ping interval (sec):').pack(side='left',padx=(18,4))
+        self.ping_interval_input=ttk.Entry(pcontrols,textvariable=self.ping_interval_var,width=7)
+        self.ping_interval_input.pack(side='left')
+        self.ping_stop_btn=ttk.Button(pcontrols,text='Stop Run-in',command=self.stop,state='disabled')
+        self.ping_stop_btn.pack(side='right')
+        columns=('onu','ip','status','rtt','success','failed','loss','max_loss','last_success','last_failed')
+        self.ping_tree=ttk.Treeview(self.ping_page,columns=columns,show='headings',height=18)
+        for key,label,width in [ ('onu','ONU ID',66),('ip','DUT IP',120),('status','Status',100),
+                               ('rtt','RTT ms',75),('success','Success',88),('failed','Failed',80),
+                               ('loss','Loss %',85),('max_loss','Max Consecutive Loss',170),
+                               ('last_success','Last Success',160),('last_failed','Last Failed',160)]:
+            self.ping_tree.heading(key,text=label)
+            self.ping_tree.column(key,width=width,anchor='center',stretch=True)
+        self.ping_tree.tag_configure('TIMEOUT',background='#ffe3e1',foreground='#a21a1a')
+        self.ping_tree.tag_configure('ONLINE',background='#ebf9ef',foreground='#116531')
+        self.ping_tree.pack(fill='both',expand=True)
+        ttk.Label(self.ping_page,text='Max Consecutive Loss is the historical peak during this Run-in; it never resets on recovery.').pack(anchor='w',pady=8)
+        self.ping_events=tk.Text(self.ping_page,height=6,state='disabled')
+        self.ping_events.pack(fill='x')
+        ttk.Button(self.ping_page,text='Back to OLT & IP Setup',command=lambda:self.tabs.select(frm)).pack(anchor='w',pady=8)
         ttk.Label(frm,text='V3600GS ONU Run-in — Direct Serial',font=('Segoe UI',14,'bold')).pack(anchor='w')
         ttk.Label(frm,text='COM Port — USB-Enhanced-SERIAL preferred').pack(anchor='w',pady=(12,2))
         row=ttk.Frame(frm);row.pack(fill='x')
@@ -388,9 +448,10 @@ class GUI:
         try:
             interval=float(self.interval_var.get()) if loop else 5.0
             duration=float(self.duration_var.get()) if loop else 0.0
-            if not (0<interval<=1440 and 0<=duration<=8760):raise ValueError()
+            ping_interval=float(self.ping_interval_var.get())
+            if not (0<interval<=1440 and 0<=duration<=8760 and 0.5<=ping_interval<=60):raise ValueError()
         except ValueError:
-            messagebox.showerror('Test Settings','Interval: >0 to 1440 min; Duration: 0 to 8760 hours')
+            messagebox.showerror('Test Settings','ONU Interval: >0 to 1440 min; Duration: 0 to 8760 hours; Ping Interval: 0.5 to 60 sec')
             return
         try:
             folder=RECORD_ROOT/('Run_'+dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f'))
@@ -402,6 +463,8 @@ class GUI:
         self.start_btn.configure(state='disabled')
         self.verify_btn.configure(state='disabled')
         self.stop_btn.configure(state='normal')
+        self.ping_stop_btn.configure(state='normal')
+        self.ping_interval_input.configure(state='disabled')
         self.combo.configure(state='disabled')
         self.refresh_button.configure(state='disabled')
         self.excel_btn.configure(state='disabled')
@@ -409,6 +472,9 @@ class GUI:
         self.update_mode()
         self.cycle_state.set('Completed cycles: 0')
         self.state.set('RUNNING — '+('Loop Check' if loop else 'Single Check'))
+        for item in self.ping_tree.get_children():self.ping_tree.delete(item)
+        self.ping_rows.clear()
+        self.ping_status.set(f'Monitoring starting — interval {ping_interval:g} sec / IP')
         self.display('START | '+port+' | records: '+str(folder))
         logger.info('START|VERSION=%s|PORT=%s|MODE=%s|INTERVAL_MIN=%s|DURATION_HR=%s',
                     VERSION,port,'LOOP' if loop else 'SINGLE',interval,duration)
@@ -418,7 +484,8 @@ class GUI:
                 factory=lambda: SerialLogin(port,logger,self.stop_flag,
                                               on_stage=lambda stage:self.messages.put(('stage',stage)))
                 run_session(factory,folder,logger,self.stop_flag,loop=loop,
-                            interval_min=interval,duration_hr=duration,notify=notify,mapping=mapping)
+                            interval_min=interval,duration_hr=duration,notify=notify,mapping=mapping,
+                            ping_interval=ping_interval)
             except Exception as exc:
                 logger.exception('SESSION_ERROR')
                 self.messages.put(('DONE',{'status':'ERROR: '+str(exc),'cycles':0,
@@ -433,6 +500,7 @@ class GUI:
         self.stop_flag.set()
         self.state.set('STOP REQUESTED — finishing current save')
         self.stop_btn.configure(state='disabled')
+        self.ping_stop_btn.configure(state='disabled')
         self.display('User requested Stop; recorded cycles will be retained')
 
     def open_records(self):
@@ -466,6 +534,25 @@ class GUI:
                     m=re.match(r'Cycle (\d+)',str(msg))
                     if m:self.cycle_state.set('Completed cycles: '+m.group(1))
                     self.state.set(str(msg))
+                elif kind=='PING_UPDATE':
+                    onu,row=msg
+                    sent=row['sent'];failed=row['failed']
+                    loss=f'{failed/sent*100:.3f}%' if sent else '—'
+                    vals=(onu,row['ip'],row['status'],row['rtt_ms'] if row['rtt_ms'] is not None else '—',
+                          row['success'],failed,loss,row['max_consecutive'],
+                          row['last_success'].replace('T',' ') if row['last_success'] else '—',
+                          row['last_failed'].replace('T',' ') if row['last_failed'] else '—')
+                    key=str(onu)
+                    if self.ping_tree.exists(key):self.ping_tree.item(key,values=vals,tags=(row['status'],))
+                    else:self.ping_tree.insert('','end',iid=key,values=vals,tags=(row['status'],))
+                    prev=self.ping_rows.get(key)
+                    if prev and prev['status'] != row['status'] and row['status'] in ('TIMEOUT','ONLINE'):
+                        self.ping_events.configure(state='normal')
+                        self.ping_events.insert('end',f"ONU {onu} / {row['ip']}: {prev['status']} → {row['status']} | Max loss {row['max_consecutive']}\n")
+                        self.ping_events.see('end')
+                        self.ping_events.configure(state='disabled')
+                    self.ping_rows[key]=row
+                    self.ping_status.set(f'Continuous Ping RUNNING — {len(self.ping_rows)} IP monitored')
                 elif kind=='SAVE ERROR':
                     self.state.set('SAVE ERROR — see execution.log')
                     self.display(msg)
@@ -494,6 +581,8 @@ class GUI:
                     self.invalidate_mapping()  # Every new run requires fresh pre-run mapping.
                     self.verify_btn.configure(state='normal')
                     self.stop_btn.configure(state='disabled')
+                    self.ping_stop_btn.configure(state='disabled')
+                    self.ping_interval_input.configure(state='normal')
                     self.combo.configure(state='readonly')
                     self.refresh_button.configure(state='normal')
                     self.update_mode()
@@ -502,6 +591,7 @@ class GUI:
                     state=msg['status']
                     self.state.set(f'{state} — {msg["cycles"]} cycles; last result: {msg["last_result"]}')
                     self.display(self.state.get())
+                    self.ping_status.set(f'Monitor stopped — {len(self.ping_rows)} IP; summary saved in Session folder')
         except queue.Empty:pass
         self.root.after(100,self.poll)
 

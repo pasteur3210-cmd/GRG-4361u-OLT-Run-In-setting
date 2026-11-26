@@ -122,14 +122,14 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
                 item = units[onu]
                 pr=cycle.get('ping',{}).get(str(onu),{})
                 vals=[pr.get('result','NOT CONFIGURED') if k=='ping_result' else
-                      (str(pr['loss'])+'/4' if pr.get('loss') is not None else 'N/A') if k=='ping_loss' else
+                      (f"{pr['loss']}/{pr['sent']} ({pr['loss']/pr['sent']*100:.3f}%)" if pr.get('sent') else 'N/A') if k=='ping_loss' else
                       item.get(k) for k,_ in FIELDS]
                 row.extend(vals)
                 detail.append([cycle.get('cycle', i), ts, onu] + vals)
             else:
                 row.extend(('UNKNOWN' if k == 'status' else
                             cycle.get('ping',{}).get(str(onu),{}).get('result','NOT CONFIGURED') if k == 'ping_result' else
-                            str(cycle.get('ping',{}).get(str(onu),{}).get('loss'))+'/4' if k=='ping_loss' and cycle.get('ping',{}).get(str(onu),{}).get('loss') is not None else None)
+                            (str(cycle.get('ping',{}).get(str(onu),{}).get('loss',0))+'/'+str(cycle.get('ping',{}).get(str(onu),{}).get('sent',0))) if k=='ping_loss' and cycle.get('ping',{}).get(str(onu),{}).get('sent') else None)
                            for k, _ in FIELDS)
         summary.append(row)
     event_rows = [['Cycle','Check Time','ONU ID','GPON SN','Previous Phase','Current Phase','Event']]
@@ -166,7 +166,8 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None):
              ['ONU columns', 'Automatically based on all actual ONU IDs; no 10/16 ONU hard limit'],
              ['Missing This Cycle', 'ONU ID not returned this cycle; NOT equivalent to Offline'],
              ['Status', 'PASS if Phase State working; FAIL for other observed states; UNKNOWN for missing state'],
-             ['Ping Result', 'PASS 0/4 lost; WARNING 1/4; FAIL >=2/4; ERROR cannot determine loss'],
+             ['Ping Result', 'Continuous ICMP status at cycle: ONLINE / TIMEOUT / INITIALIZING / ERROR; no extra 4-packet ping'],
+             ['Ping Loss', 'Cumulative failed/sent (percentage) at ONU cycle timestamp; CSV stores each individual ping'] ,
              ['N/A', 'Device returned N/A; do not interpret as PASS'],
              ['Units', 'Rx/Tx are raw CLI values; confirm dBm with product specification'],
              ['Mapping rule', 'ARP MAC may equal LAN MAC (DIRECT), or LAN MAC + 1 (OFFSET_MINUS_1); match last 6 hex with GPON SN, unique only'],

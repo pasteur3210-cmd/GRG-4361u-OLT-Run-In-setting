@@ -134,19 +134,19 @@ class PingTests(unittest.TestCase):
         self.assertIn('IP PING Result',labels)
         self.assertIn('PING Loss',labels)
         cycle={'cycle':1,'time':'t','onus':S,'result':'PASS',
-               'ping':{'1':{'result':'PASS','loss':0},'2':{'result':'WARNING','loss':1}}}
+               'ping':{'1':{'result':'PASS','loss':0,'sent':4},'2':{'result':'TIMEOUT','loss':1,'sent':4}}}
         rows=build_rows([cycle],mapping={1:{'ip':IP1,'mac':'AABBCC112256','gpon_sn':S[1]['gpon_sn']},
                                              2:{'ip':IP2,'mac':'AABBCCABE12A','gpon_sn':S[2]['gpon_sn']}})
         header,data=rows[0][1]
-        self.assertEqual(data[header.index('ONU2_PING Loss')],'1/4')
+        self.assertEqual(data[header.index('ONU2_PING Loss')],'1/4 (25.000%)')
         self.assertEqual(data[header.index('ONU1_IP PING Result')],'PASS')
         self.assertEqual(rows[2][0],'03_IP_Mapping')
     def test_cycle_ping_fail_overall_fail(self):
         from session_runner import cycle_result
         units={1:dict(S[1],data_flag='OK')}
         mapping={1:{'gpon_sn':S[1]['gpon_sn'],'ip':IP1}}
-        self.assertEqual(cycle_result(units,'',{1},{'1':{'result':'FAIL'}},mapping),'FAIL')
-        self.assertEqual(cycle_result(units,'',{1},{'1':{'result':'WARNING'}},mapping),'PASS')
+        self.assertEqual(cycle_result(units,'',{1},{'1':{'result':'TIMEOUT'}},mapping),'FAIL')
+        self.assertEqual(cycle_result(units,'',{1},{'1':{'result':'ONLINE'}},mapping),'PASS')
         self.assertEqual(cycle_result(units,'',{1},{'1':{'result':'ERROR'}},mapping),'INCOMPLETE')
     def test_run_session_ping_journal_and_workbook(self):
         class Client:
@@ -160,11 +160,11 @@ class PingTests(unittest.TestCase):
         mapping={1:{'ip':IP1,'mac':'AABBCC112256','gpon_sn':S[1]['gpon_sn']}}
         with tempfile.TemporaryDirectory() as td:
             result=run_session(Client,td,logging.getLogger('new'),threading.Event(),
-                               mapping=mapping,ping_fn=good_ping)
+                               mapping=mapping,ping_fn=lambda ip: (True,1.0,''))
             self.assertEqual(result['cycles'],1)
             self.assertTrue(Path(td,'mapping.json').exists())
-            self.assertTrue(Path(td,'raw_ping','Loop_0001_ONU1.log').exists())
-            self.assertEqual(read_journal(td)[0]['ping']['1']['result'],'PASS')
+            self.assertTrue(Path(td,'continuous_ping.csv').exists())
+            self.assertEqual(read_journal(td)[0]['ping']['1']['result'],'ONLINE')
             with ZipFile(Path(td,'ONU_Master_Record.xlsx')) as z:
                 self.assertIsNone(z.testzip())
                 self.assertIn('03_IP_Mapping',z.read('xl/workbook.xml').decode())

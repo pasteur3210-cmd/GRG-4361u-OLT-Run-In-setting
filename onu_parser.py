@@ -51,6 +51,9 @@ def normalize_terminal_output(raw: str) -> str:
                     cursor = max(0, cursor-min(count,10000))
                 elif op == 'G':
                     cursor = max(0, count-1)
+                elif op == 'K':
+                    # Erase from cursor to end of display line.
+                    cells = cells[:cursor]
                 i += len(m.group(0))
                 continue
         if ch == '\r':
@@ -83,6 +86,8 @@ def parse_time_stamp(output: str) -> dict[int, dict]:
         line = line.strip()
         match = TIME_ROW.match(line)
         if not match:
+            if re.match(r'^\d+/\d+',line):
+                raise ValueError('Malformed ONU time-stamp row: '+line[:160])
             continue
         v = {k: (val.strip() or 'N/A') for k, val in match.groupdict().items()}
         onu = int(v['port'].split('/')[-1])
@@ -98,7 +103,7 @@ def parse_time_stamp(output: str) -> dict[int, dict]:
 def parse_optical(output: str) -> dict[int, dict]:
     entries: dict[int, dict] = {}
     current = None
-    for line in output.replace('\x00', '').splitlines():
+    for line in normalize_terminal_output(output.replace('\x00', '')).splitlines():
         match = re.match(r'^\s*ONU ID\s*:\s*(\d+)\s*$', line, re.I)
         if match:
             onu = int(match.group(1))
@@ -169,6 +174,8 @@ def parse_onu_state(output: str) -> dict[int, dict]:
     for line in tables[-1]:
         m = STATE_ROW.match(line)
         if not m:
+            if re.match(r'^\s*\d+\s*:\s*\d+\b', line):
+                raise ValueError('Malformed ONU state row: '+line[:160])
             continue
         d = m.groupdict()
         onu = int(d['id'])

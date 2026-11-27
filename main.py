@@ -21,7 +21,7 @@ from ping_mapping import STATIC_IP_POOL, discover_static_mapping
 from production_info import validate_production_info
 from serial.tools import list_ports
 
-VERSION = "1.0.20"
+VERSION = "1.0.21"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -260,7 +260,9 @@ class GUI:
     def __init__(self, root):
         self.root = root
         root.title('V3600GS Connect V'+VERSION+' — ONU Run-in')
-        root.geometry('1190x790')
+        root.geometry('1320x860')
+        root.minsize(1060,740)
+        root.configure(bg='#edf3fa')
         self.messages = queue.Queue()
         self.stop_flag = threading.Event()
         self.running = False
@@ -281,29 +283,30 @@ class GUI:
         # tabs and render ONE high-contrast navigation bar with real buttons.
         style=ttk.Style(root)
         style.layout('RuninHidden.TNotebook.Tab', [])
-        self.nav=tk.Frame(root,bg='#dbe5f2',height=52)
+        self._configure_visual_styles(style)
+        self.nav=tk.Frame(root,bg='#dae7f6',height=64)
         self.nav.pack(fill='x')
         self.nav.pack_propagate(False)
         self.nav_btns=[]
         for idx,label in enumerate(('① OLT & IP Setup / ONU Check','② Live Ping Monitor')):
-            btn=tk.Button(self.nav,text=label,font=('Segoe UI',12,'bold'),
-                          relief='flat',bd=0,highlightthickness=0,cursor='hand2',
+            btn=tk.Button(self.nav,text=label,font=('Segoe UI',13,'bold'),
+                          relief='ridge',bd=2,highlightthickness=0,cursor='hand2',
                           command=lambda i=idx:self.change_tab(i))
-            btn.pack(side='left',fill='y',padx=(5,0),ipadx=22)
+            btn.pack(side='left',fill='y',padx=(10,0),pady=(8,3),ipadx=20)
             self.nav_btns.append(btn)
         self.tabs=ttk.Notebook(root,style='RuninHidden.TNotebook')
         self.tabs.pack(fill='both',expand=True)
-        frm=ttk.Frame(self.tabs,padding=16)
+        frm=ttk.Frame(self.tabs,padding=12,style='OltPage.TFrame')
         self.tabs.add(frm,text='OLT & IP Setup / ONU Check')
-        self.ping_page=ttk.Frame(self.tabs,padding=16)
+        self.ping_page=ttk.Frame(self.tabs,padding=12,style='PingPage.TFrame')
         self.tabs.add(self.ping_page,text='Live Ping Monitor')
         self.tabs.bind('<<NotebookTabChanged>>',lambda _event:self.update_nav())
         self.update_nav()
         self.ping_rows={}
         self.ping_status=tk.StringVar(value='Not monitoring — Start Run-in from OLT & IP Setup')
         self.ping_interval_var=tk.StringVar(value='1.0')
-        ttk.Label(self.ping_page,text='Continuous Ping Monitor',font=('Segoe UI',15,'bold')).pack(anchor='w',pady=(2,6))
-        pcontrols=ttk.Frame(self.ping_page)
+        ttk.Label(self.ping_page,text='Continuous Ping Monitor',style='PageHeading.TLabel').pack(anchor='w',pady=(2,6))
+        pcontrols=ttk.Frame(self.ping_page,style='PingPage.TFrame')
         pcontrols.pack(fill='x',pady=(0,12))
         ttk.Label(pcontrols,textvariable=self.ping_status,foreground='#005ea8').pack(side='left')
         ttk.Label(pcontrols,text='Ping interval (sec):').pack(side='left',padx=(18,4))
@@ -312,7 +315,7 @@ class GUI:
         self.ping_stop_btn=ttk.Button(pcontrols,text='Stop Run-in',command=self.stop,state='disabled')
         self.ping_stop_btn.pack(side='right')
         columns=('onu','ip','status','result','rtt','success','failed','loss','max_loss','allowed','last_success','last_failed')
-        self.ping_tree=ttk.Treeview(self.ping_page,columns=columns,show='headings',height=18)
+        self.ping_tree=ttk.Treeview(self.ping_page,columns=columns,show='headings',height=18,style='Modern.Treeview')
         for key,label,width in [ ('onu','ONU ID',66),('ip','DUT IP',120),('status','Status',90),('result','Test Result',115),
                                ('rtt','RTT ms',75),('success','Success',88),('failed','Failed',80),
                                ('loss','Loss %',85),('max_loss','Max Consecutive Loss',170),('allowed','Allowed Loss',110),
@@ -326,18 +329,21 @@ class GUI:
         self.ping_tree.tag_configure('ERROR',background='#ffead7',foreground='#894600')
         self.ping_tree.pack(fill='both',expand=True)
         ttk.Label(self.ping_page,text='FAIL latched: Max Consecutive Loss >= 6 immediately; cumulative loss > 50 at 8h, > 100 at 16h, > 150 at 24h, ...').pack(anchor='w',pady=8)
-        self.ping_events=tk.Text(self.ping_page,height=6,state='disabled')
+        self.ping_events=tk.Text(self.ping_page,height=6,state='disabled',bg='#f5f9fc',fg='#263a53',relief='flat',highlightbackground='#c6d9e9',highlightthickness=1,font=('Consolas',10))
         self.ping_events.pack(fill='x')
         ttk.Button(self.ping_page,text='Back to OLT & IP Setup',command=lambda:self.change_tab(0)).pack(anchor='w',pady=8)
-        ttk.Label(frm,text='V3600GS ONU Run-in — Direct Serial',font=('Segoe UI',14,'bold')).pack(anchor='w')
-        ttk.Label(frm,text='COM Port — USB-Enhanced-SERIAL preferred').pack(anchor='w',pady=(12,2))
-        row=ttk.Frame(frm);row.pack(fill='x')
+        ttk.Label(frm,text='V3600GS ONU Run-in — Direct Serial',style='PageHeading.TLabel').pack(anchor='w')
+        self._build_summary(frm)
+        com_card=ttk.LabelFrame(frm,text='  Serial / COM Settings  ',padding=9,style='Card.TLabelframe')
+        com_card.pack(fill='x',pady=(6,5))
+        ttk.Label(com_card,text='COM Port — USB-Enhanced-SERIAL preferred').pack(anchor='w',pady=(0,3))
+        row=ttk.Frame(com_card);row.pack(fill='x')
         self.combo=ttk.Combobox(row,textvariable=self.port_var,state='readonly',width=75)
         self.combo.pack(side='left',fill='x',expand=True)
         self.refresh_button=ttk.Button(row,text='Refresh COM',command=self.refresh)
         self.refresh_button.pack(side='left',padx=8)
-        ttk.Label(frm,text='Serial: 115200 / 8N1 | Login → Enable → Config → GPON 0/1').pack(anchor='w',pady=(10,4))
-        production=ttk.LabelFrame(frm,text='Production Information',padding=9)
+        ttk.Label(com_card,text='115200 / 8N1  |  Login → Enable → Config → GPON 0/1',style='Subtle.TLabel').pack(anchor='w',pady=(4,0))
+        production=ttk.LabelFrame(frm,text='  Production Information  ',padding=9,style='Card.TLabelframe')
         production.pack(fill='x',pady=(4,8))
         for label,var,width in (('PO',self.po_var,26),('Model Name',self.model_var,24),('Operator',self.operator_var,23)):
             group=ttk.Frame(production);group.pack(side='left',padx=(0,18))
@@ -347,7 +353,7 @@ class GUI:
             if label=='PO':self.po_entry=entry
             elif label=='Model Name':self.model_entry=entry
             else:self.operator_entry=entry
-        settings=ttk.LabelFrame(frm,text='Test Settings',padding=9)
+        settings=ttk.LabelFrame(frm,text='  Test Settings  ',padding=9,style='Card.TLabelframe')
         settings.pack(fill='x',pady=(4,8))
         modes=ttk.Frame(settings);modes.pack(fill='x')
         ttk.Radiobutton(modes,text='Single Check',value='single',variable=self.mode,command=self.update_mode).pack(side='left',padx=(0,16))
@@ -359,7 +365,7 @@ class GUI:
         ttk.Label(nums,text='Duration (hours, 0 = until Stop):').pack(side='left')
         self.duration_input=ttk.Entry(nums,textvariable=self.duration_var,width=9)
         self.duration_input.pack(side='left',padx=(5,0))
-        mappingframe=ttk.LabelFrame(frm,text='Pre-Run DUT IP / MAC / GPON SN Verification',padding=8)
+        mappingframe=ttk.LabelFrame(frm,text='  Pre-Run DUT IP / MAC / GPON SN Verification  ',padding=9,style='Card.TLabelframe')
         mappingframe.pack(fill='x',pady=(3,7))
         iprow=ttk.Frame(mappingframe);iprow.pack(fill='x',pady=(1,6))
         ttk.Label(iprow,text='Static IP Pool: 192.168.2.121 – 192.168.2.136 (16 addresses)').pack(side='left')
@@ -374,27 +380,94 @@ class GUI:
         self.verify_btn.pack(side='left')
         self.mapping_label=tk.StringVar(value='Mapping NOT VERIFIED — verify before Start')
         ttk.Label(mbuttons,textvariable=self.mapping_label).pack(side='left',padx=12)
-        self.map_tree=ttk.Treeview(mappingframe,columns=('ip','mac','lan','type','onu','sn','ping','status'),show='headings',height=4)
+        self.map_tree=ttk.Treeview(mappingframe,columns=('ip','mac','lan','type','onu','sn','ping','status'),show='headings',height=4,style='Modern.Treeview')
         for key,label,width in [('ip','DUT IP',130),('mac','WAN MAC (ARP)',145),('lan','LAN MAC (verified)',145),('type','Match Type',138),('onu','ONU ID',80),('sn','GPON SN',150),('ping','Pre-Ping',90),('status','Mapping',170)]:
             self.map_tree.heading(key,text=label)
             self.map_tree.column(key,width=width,stretch=True)
+        self.map_tree.tag_configure('MATCH',background='#e8f7ed',foreground='#195538')
+        self.map_tree.tag_configure('NOT_MATCH',background='#fff0ec',foreground='#9c2927')
         self.map_tree.pack(fill='x',pady=(5,0))
         buttons=ttk.Frame(frm);buttons.pack(fill='x',pady=(8,9))
-        self.start_btn=ttk.Button(buttons,text='Start ONU Check',command=self.start,state='disabled')
+        self.start_btn=ttk.Button(buttons,text='▶  Start ONU Check',command=self.start,state='disabled',style='Primary.TButton')
         self.start_btn.pack(side='left')
-        self.stop_btn=ttk.Button(buttons,text='Stop',command=self.stop,state='disabled')
+        self.stop_btn=ttk.Button(buttons,text='■  Stop',command=self.stop,state='disabled',style='Danger.TButton')
         self.stop_btn.pack(side='left',padx=10)
-        ttk.Button(buttons,text='Open Records Folder',command=self.open_records).pack(side='right')
-        self.excel_btn=ttk.Button(buttons,text='Open Excel',command=self.open_excel,state='disabled')
+        ttk.Button(buttons,text='▣  Open Records Folder',command=self.open_records).pack(side='right')
+        self.excel_btn=ttk.Button(buttons,text='▤  Open Excel',command=self.open_excel,state='disabled')
         self.excel_btn.pack(side='right',padx=10)
-        ttk.Label(frm,textvariable=self.state,foreground='#005ea8',font=('Segoe UI',10,'bold')).pack(anchor='w')
+        status_frame=ttk.Frame(frm,style='Status.TFrame',padding=(10,7))
+        status_frame.pack(fill='x',pady=(3,2))
+        ttk.Label(status_frame,text='RESULT / STATUS',style='StatusHeading.TLabel').pack(side='left',padx=(0,18))
+        ttk.Label(status_frame,textvariable=self.state,style='StatusValue.TLabel').pack(side='left')
         ttk.Label(frm,textvariable=self.cycle_state).pack(anchor='w',pady=(3,0))
-        self.out=tk.Text(frm,height=12,wrap='word',state='disabled')
+        self.out=tk.Text(frm,height=9,wrap='word',state='disabled',bg='#f6f9fd',fg='#21364f',relief='flat',highlightbackground='#bfd5e9',highlightthickness=1,font=('Consolas',10))
         self.out.pack(fill='both',expand=True,pady=(8,0))
         self.port_var.trace_add('write',lambda *_:self.invalidate_mapping())
         self.refresh()
         self.update_mode()
         root.after(100,self.poll)
+
+    @staticmethod
+    def _configure_visual_styles(style):
+        # Presentation only: business logic, session timing and record writers remain unchanged.
+        style.configure('OltPage.TFrame',background='#eff5ff')
+        style.configure('PingPage.TFrame',background='#eefaf6')
+        style.configure('PageHeading.TLabel',font=('Segoe UI',15,'bold'),foreground='#16365f')
+        style.configure('Subtle.TLabel',foreground='#516780')
+        style.configure('Card.TLabelframe',background='#f7faff',borderwidth=1,relief='solid')
+        style.configure('Card.TLabelframe.Label',font=('Segoe UI',10,'bold'),foreground='#164477',background='#edf4ff')
+        style.configure('TEntry',fieldbackground='#f0f3f7',padding=4)
+        style.map('TEntry',fieldbackground=[('disabled','#e2e6eb'),('readonly','#e6ebf2')],foreground=[('disabled','#7b8795')])
+        style.configure('TCombobox',fieldbackground='#eff2f7',padding=4)
+        style.configure('Primary.TButton',font=('Segoe UI',10,'bold'),padding=(12,7))
+        style.configure('Danger.TButton',font=('Segoe UI',10,'bold'),padding=(12,7))
+        style.configure('Modern.Treeview',rowheight=27,font=('Segoe UI',9),background='#f9fbff',fieldbackground='#f9fbff')
+        style.configure('Modern.Treeview.Heading',font=('Segoe UI',9,'bold'),padding=6)
+        style.configure('Status.TFrame',background='#dceaf9')
+        style.configure('StatusHeading.TLabel',background='#dceaf9',foreground='#234e80',font=('Segoe UI',10,'bold'))
+        style.configure('StatusValue.TLabel',background='#dceaf9',foreground='#073e7e',font=('Segoe UI',12,'bold'))
+
+    def _build_summary(self,parent):
+        panel=tk.Frame(parent,bg='#e4eef9',highlightbackground='#bad2e8',highlightthickness=1)
+        panel.pack(fill='x',pady=(7,2))
+        metrics=[('Completed Cycles',self.cycle_state,'#19589b'),
+                 ('Latest ONU Result',self.state,'#087b4e'),
+                 ('Expected DUT',self.expected_count_var,'#275b99'),
+                 ('Session Status',self.state,'#19589b')]
+        self.summary_values=[]
+        for idx,(title,value,color) in enumerate(metrics):
+            cell=tk.Frame(panel,bg='#f2f7fc',padx=12,pady=6)
+            cell.pack(side='left',fill='x',expand=True,padx=3,pady=4)
+            tk.Label(cell,text=title,font=('Segoe UI',9,'bold'),bg='#f2f7fc',fg='#4c6480').pack(anchor='w')
+            label=tk.Label(cell,text='—',font=('Segoe UI',12,'bold'),bg='#f2f7fc',fg=color,anchor='w')
+            label.pack(anchor='w')
+            self.summary_values.append(label)
+        self.state.trace_add('write',lambda *_:self._refresh_summary())
+        self.cycle_state.trace_add('write',lambda *_:self._refresh_summary())
+        self.expected_count_var.trace_add('write',lambda *_:self._refresh_summary())
+        self._refresh_summary()
+
+    def _refresh_summary(self):
+        text=self.state.get()
+        cycles=re.search(r'(?:Completed cycles:\s*|—\s*)(\d+)\s*cycles',self.cycle_state.get()+' | '+text,re.I)
+        num=re.search(r'\d+',self.cycle_state.get())
+        result=re.search(r'last result:\s*(PASS|FAIL|ERROR|INCOMPLETE)',text,re.I)
+        result_value=result.group(1).upper() if result else ('RUNNING' if self.running else '—')
+        status='COMPLETED' if text.startswith('COMPLETED') else ('STOPPED' if 'STOPPED' in text else 'RUNNING' if self.running else 'READY')
+        for label,value in zip(self.summary_values,(num.group(0) if num else '0',result_value,self.expected_count_var.get(),status)):
+            label.configure(text=value)
+
+    def _monitor_completion_text(self,msg):
+        rows=list(self.ping_rows.values())
+        state=str(msg.get('status',''))
+        done=sum(1 for row in rows if row.get('checkpoints_completed',0)>=1)
+        if done:
+            suffix=f'{done}/{len(rows)} IP with 8h+ checkpoints completed'
+        elif state=='COMPLETED':
+            suffix='Short-run completed (<8h); 8h checkpoint not verified'
+        else:
+            suffix='Run stopped early; see session summary for final result'
+        return f'Monitor stopped — {len(rows)} IP; final results saved. {suffix}.'
 
     def change_tab(self,index):
         self.tabs.select(index)
@@ -404,11 +477,11 @@ class GUI:
         index=self.tabs.index(self.tabs.select())
         for i,button in enumerate(self.nav_btns):
             if i==index:
-                button.configure(bg='#0757a6',fg='#ffffff',activebackground='#064887',
-                                 activeforeground='#ffffff')
+                button.configure(bg='#b6dbff' if i==0 else '#b2ecdb',fg='#073366',activebackground='#9bc7f1',
+                                 activeforeground='#073366',relief='sunken',bd=3,highlightbackground='#074e9a')
             else:
-                button.configure(bg='#e5e9ef',fg='#313c4e',activebackground='#c1dafa',
-                                 activeforeground='#0757a6')
+                button.configure(bg='#e6eef8' if i==0 else '#e4f5ef',fg='#2a4865',activebackground='#c1dafa',
+                                 activeforeground='#0757a6',relief='raised',bd=1)
 
     def display(self,message):
         self.out.configure(state='normal')
@@ -634,7 +707,7 @@ class GUI:
                     for existing in self.map_tree.get_children():self.map_tree.delete(existing)
                     for row in msg['rows']:
                         self.map_tree.insert('', 'end', values=(row['ip'],row['mac'],row.get('lan_mac',''),row.get('match_type',''),row['onu_id'] or '',
-                                             row['gpon_sn'],row['ping'],row['status']))
+                                             row['gpon_sn'],row['ping'],row['status']), tags=('MATCH' if row['status']=='MATCH' else 'NOT_MATCH',))
                     if not msg['errors'] and self.mapping_snapshot()==msg['snapshot']:
                         self.verified_mapping=msg['mapping']
                         self.verified_snapshot=msg['snapshot']
@@ -663,7 +736,7 @@ class GUI:
                     state=msg['status']
                     self.state.set(f'{state} — {msg["cycles"]} cycles; last result: {msg["last_result"]}')
                     self.display(self.state.get())
-                    self.ping_status.set(f'Monitor stopped — {len(self.ping_rows)} IP; final results saved. Under 8h = short-run only (not 8h certified).')
+                    self.ping_status.set(self._monitor_completion_text(msg))
         except queue.Empty:pass
         self.root.after(100,self.poll)
 

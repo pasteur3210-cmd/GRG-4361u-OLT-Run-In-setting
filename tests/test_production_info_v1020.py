@@ -68,8 +68,8 @@ class ProductionInfoTests(unittest.TestCase):
     def test_navigation_uses_single_custom_tab_set(self):
         source=(Path(__file__).parent.parent/'main.py').read_text(encoding='utf-8')
         self.assertIn("style.layout('RuninHidden.TNotebook.Tab', [])",source)
-        self.assertIn("bg='#0757a6'",source)
-        self.assertIn("fg='#ffffff'",source)
+        self.assertIn("bg='#b6dbff'",source)
+        self.assertIn("fg='#073366'",source)
         self.assertEqual(source.count('self.nav_btns.append(btn)'),1)
 
 if __name__=='__main__':unittest.main()

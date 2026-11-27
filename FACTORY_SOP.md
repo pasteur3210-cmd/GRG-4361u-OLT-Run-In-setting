@@ -1,4 +1,4 @@
-# Factory SOP — V3600GS Connect V1.0.20
+# Factory SOP — V3600GS Connect V1.0.21
 1. Connect V3600GS Console USB and verify `USB-Enhanced-SERIAL` COM, close Tera Term.
 2. Set PC local timezone; plug into AC power. Set Windows 11 Power & battery > Screen, sleep & hibernate to keep system awake during the run, disable scheduled automatic restart, and verify USB/Network stability.
 3. Launch EXE; select Expected DUT Count (1–16), then Auto Scan and Verify Mapping against the fixed IP pool 192.168.2.121–136. Only proceed when every required DUT is a unique MATCH.
@@ -41,10 +41,14 @@
 - The 8/16/24h checkpoints are still required for the cumulative packet-loss rule.
 - Run-in status and per-IP final results are in `status.txt` and `continuous_ping_summary.csv` beside the normal Session records.
 
-## V1.0.20 Production Information
+## V1.0.21 Production Information
 1. On the first tab, enter **PO** (optional, initially blank), **Model Name** (defaults to `GRG-4361`; editable but cannot be blank), and **Operator** (optional, initially blank).
 2. Complete mapping before clicking Start. Production Information is captured at the moment Start is pressed and cannot be modified while the test is running.
 3. To verify traceability, open the run folder `production_info.json`, `ONU_Master_Record.xlsx` sheets `01_Loop_Summary` and `06_Run_Metadata`, and `continuous_ping_summary.csv`: all must contain identical PO / Model / Operator values.
 4. For the next batch, change the Production Information and perform a new mapping; previous Session files remain untouched.
 5. Navigate via the single large tab row: **dark blue + white text = active**, **light gray = inactive**. Switching between tabs does not start/stop any test.
 6. The 8h and 16h acceptance checkpoints still require corresponding wall-clock field tests; do not certify those conditions using a 1-hour run.
+
+
+## V1.0.21 GUI restyling (behavior unchanged)
+Use the two pale-color tabs (blue OLT, mint Ping) and the read-only summary at top of OLT screen. All operations, output files and validation rules are the same as V1.0.20. On Windows displays with nondefault scaling verify no controls are clipped before production use.

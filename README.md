@@ -68,3 +68,7 @@ The OLT & IP Setup / ONU Check tab scrolls vertically when the content is taller
 
 ## V1.0.23 CT icon update
 The earlier HD icon is replaced by the approved dark-grey CT monogram on a white background, file `CT.ico`, used by PyInstaller for the EXE and by Tk for the titlebar/taskbar. All V1.0.22 workarea scrolling and existing test functions are retained unchanged.
+
+
+## V1.0.23.1 GitHub build dependency hotfix
+GitHub Actions now installs Pillow==11.3.0 from requirements-build.txt and verifies its import before unit tests. Previous CT icon, scrolled OLT GUI and all testing functions are unchanged. GitHub Windows EXE build still needs an actual workflow run.

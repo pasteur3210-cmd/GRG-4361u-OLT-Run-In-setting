@@ -72,3 +72,7 @@ The earlier HD icon is replaced by the approved dark-grey CT monogram on a white
 
 ## V1.0.23.1 GitHub build dependency hotfix
 GitHub Actions now installs Pillow==11.3.0 from requirements-build.txt and verifies its import before unit tests. Previous CT icon, scrolled OLT GUI and all testing functions are unchanged. GitHub Windows EXE build still needs an actual workflow run.
+
+
+## V1.0.23.3
+Mapping table is vertically/horizontally scrollable for 1-16 DUTs. Expected/Discovered/MATCH counters appear above the table. All runtime functions unchanged.

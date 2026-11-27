@@ -19,5 +19,5 @@ class CTIconTests(unittest.TestCase):
         self.assertIn('SetCurrentProcessExplicitAppUserModelID', main)
         self.assertIn('--icon CT.ico',build)
         self.assertIn('--add-data "CT.ico;."',build)
-        self.assertIn('V3600GS_Connect_V1.0.23.1',build)
+        self.assertIn('V3600GS_Connect_V1.0.23.3',build)
         self.assertNotIn('HD.ico',build)

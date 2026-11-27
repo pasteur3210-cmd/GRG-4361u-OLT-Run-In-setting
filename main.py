@@ -21,7 +21,7 @@ from ping_mapping import STATIC_IP_POOL, discover_static_mapping
 from production_info import validate_production_info
 from serial.tools import list_ports
 
-VERSION = "1.0.23.1"
+VERSION = "1.0.23.3"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -397,13 +397,26 @@ class GUI:
         self.verify_btn.pack(side='left')
         self.mapping_label=tk.StringVar(value='Mapping NOT VERIFIED — verify before Start')
         ttk.Label(mbuttons,textvariable=self.mapping_label).pack(side='left',padx=12)
-        self.map_tree=ttk.Treeview(mappingframe,columns=('ip','mac','lan','type','onu','sn','ping','status'),show='headings',height=4,style='Modern.Treeview')
+        # Mapping display only: keep all discovered rows; make 10–16 DUTs
+        # navigable without expanding the page or hiding Start/Stop controls.
+        self.mapping_counts_var=tk.StringVar(value='Expected: 2  |  Discovered: —  |  MATCH: —')
+        ttk.Label(mappingframe,textvariable=self.mapping_counts_var,style='Subtle.TLabel').pack(anchor='w',pady=(5,0))
+        tree_container=ttk.Frame(mappingframe)
+        tree_container.pack(fill='x',pady=(5,0))
+        self.map_tree=ttk.Treeview(tree_container,columns=('ip','mac','lan','type','onu','sn','ping','status'),show='headings',height=7,style='Modern.Treeview')
         for key,label,width in [('ip','DUT IP',130),('mac','WAN MAC (ARP)',145),('lan','LAN MAC (verified)',145),('type','Match Type',138),('onu','ONU ID',80),('sn','GPON SN',150),('ping','Pre-Ping',90),('status','Mapping',170)]:
             self.map_tree.heading(key,text=label)
             self.map_tree.column(key,width=width,stretch=True)
         self.map_tree.tag_configure('MATCH',background='#e8f7ed',foreground='#195538')
         self.map_tree.tag_configure('NOT_MATCH',background='#fff0ec',foreground='#9c2927')
-        self.map_tree.pack(fill='x',pady=(5,0))
+        self.mapping_vscroll=ttk.Scrollbar(tree_container,orient='vertical',command=self.map_tree.yview)
+        self.mapping_hscroll=ttk.Scrollbar(tree_container,orient='horizontal',command=self.map_tree.xview)
+        self.map_tree.configure(yscrollcommand=self.mapping_vscroll.set,xscrollcommand=self.mapping_hscroll.set)
+        self.map_tree.grid(row=0,column=0,sticky='nsew')
+        self.mapping_vscroll.grid(row=0,column=1,sticky='ns')
+        self.mapping_hscroll.grid(row=1,column=0,sticky='ew')
+        tree_container.columnconfigure(0,weight=1)
+        tree_container.rowconfigure(0,weight=1)
         buttons=ttk.Frame(frm);buttons.pack(fill='x',pady=(8,9))
         self.start_btn=ttk.Button(buttons,text='▶  Start ONU Check',command=self.start,state='disabled',style='Primary.TButton')
         self.start_btn.pack(side='left')
@@ -432,6 +445,10 @@ class GUI:
             under=self.root.winfo_containing(self.root.winfo_pointerx(),self.root.winfo_pointery())
             widget=under
             while widget is not None:
+                # Let the mapping Treeview's own wheel handler scroll its rows.
+                # Do not scroll the outer OLT canvas simultaneously.
+                if widget is self.map_tree:
+                    return
                 if widget is self.olt_canvas:
                     delta=(-1 if event.num==4 else 1 if event.num==5 else -int(event.delta / 120))
                     if delta:
@@ -527,6 +544,7 @@ class GUI:
         self.verified_mapping=None
         self.verified_snapshot=None
         self.mapping_label.set('Mapping NOT VERIFIED — verify before Start')
+        self.mapping_counts_var.set(f'Expected: {self.expected_count_var.get()}  |  Discovered: —  |  MATCH: —')
         self.start_btn.configure(state='disabled')
 
     def mapping_snapshot(self):
@@ -742,6 +760,8 @@ class GUI:
                     for row in msg['rows']:
                         self.map_tree.insert('', 'end', values=(row['ip'],row['mac'],row.get('lan_mac',''),row.get('match_type',''),row['onu_id'] or '',
                                              row['gpon_sn'],row['ping'],row['status']), tags=('MATCH' if row['status']=='MATCH' else 'NOT_MATCH',))
+                    matched=sum(1 for row in msg['rows'] if row['status']=='MATCH')
+                    self.mapping_counts_var.set(f'Expected: {msg["snapshot"][1]}  |  Discovered: {len(msg["rows"])}  |  MATCH: {matched}')
                     if not msg['errors'] and self.mapping_snapshot()==msg['snapshot']:
                         self.verified_mapping=msg['mapping']
                         self.verified_snapshot=msg['snapshot']
@@ -750,6 +770,7 @@ class GUI:
                         self.state.set('MAPPING VERIFIED — ready for Start')
                     else:
                         self.invalidate_mapping()
+                        self.mapping_counts_var.set(f'Expected: {msg["snapshot"][1]}  |  Discovered: {len(msg["rows"])}  |  MATCH: {matched}')
                         self.state.set('MAPPING FAILED — '+ '; '.join(msg['errors'][:3]))
                         self.display(self.state.get())
                     self.update_mode()

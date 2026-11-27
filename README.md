@@ -1,3 +1,5 @@
+> **V1.0.24 release note:** At session end, the `07_Session_Final` tab is selected automatically on opening the workbook. Per-cycle results in `01_Loop_Summary` are historical snapshots, not the authoritative final Run-in verdict. `04_Event_Log` contains finalized Continuous Ping trigger/recovery events.
+
 # V3600GS Connect V1.0.21
 Windows 11 direct Serial tool; no Tera Term required while running the compiled EXE. Auto COM selection, 115200 8N1, login, ONU state/time-stamp/optical queries, continuous multi-IP independent Ping, per-run Excel accumulation.
 

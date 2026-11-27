@@ -5,6 +5,7 @@ JSONL cycles intact, allowing rebuilding the workbook via `rebuild_excel`.
 """
 from __future__ import annotations
 import datetime as dt
+import csv
 import json
 import time
 from pathlib import Path
@@ -48,8 +49,17 @@ def read_production_info(folder):
 
 def rebuild_excel(folder):
     folder=Path(folder)
+    final_path=folder/'status.txt'
+    final_summary=json.loads(final_path.read_text(encoding='utf-8')) if final_path.exists() else None
+    ping_events_path=folder/'continuous_ping_events.csv'
+    ping_events=[]
+    # Only read the event file after Ping worker closure (session finalized).
+    if final_summary is not None and ping_events_path.exists():
+        with ping_events_path.open(encoding='utf-8-sig',newline='') as f:
+            ping_events=list(csv.DictReader(f))
     return export_cycles(folder/'ONU_Master_Record.xlsx',read_journal(folder),
-                         mapping=read_mapping(folder),production_info=read_production_info(folder))
+                         mapping=read_mapping(folder),production_info=read_production_info(folder),
+                         final_summary=final_summary,ping_events=ping_events)
 
 
 def read_mapping(folder):
@@ -286,19 +296,28 @@ def run_session(client_factory, folder, logger, stop_event, *, loop=False,
             except Exception as exc:
                 logger.exception('CONTINUOUS_PING_STOP_FAILED')
                 if status=='COMPLETED':status='PING SAVE ERROR'
-        # A missing XLSX due to transient file lock may be recoverable after close.
-        if cycles:
-            try: rebuild_excel(folder)
-            except Exception as exc:
-                logger.exception('FINAL_EXCEL_SAVE_FAILED')
-                if status=='COMPLETED':status='SAVE ERROR'
-        elif status=='COMPLETED':status='NO DATA'
+        # Final status is authoritative and is saved BEFORE final workbook
+        # reconstruction. This closes the gap where Ping FAIL occurs between
+        # the last scheduled ONU query and Stop.
         last_result=cycles[-1]['result'] if cycles else None
         if any(row.get('test_result')=='FAIL' for row in final_ping.values()):last_result='FAIL'
+        if not cycles and status=='COMPLETED':status='NO DATA'
         summary={'status':status,'cycles':len(cycles),'folder':str(folder),
                  'last_result':last_result, 'production_info':production_info, 'ping_final':final_ping,
                  'ping_final_assessment':final_assessment}
-        (folder/'status.txt').write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+        status_path=folder/'status.txt'
+        status_path.write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+        if cycles:
+            try:
+                rebuild_excel(folder)
+                logger.info('FINAL_EXCEL_SAVED|CYCLES=%s|RESULT=%s',len(cycles),last_result)
+            except Exception:
+                logger.exception('FINAL_EXCEL_SAVE_FAILED')
+                summary['excel_final_sync']='FAILED; use rebuild_excel.py after resolving file lock'
+                if status=='COMPLETED':summary['status']='SAVE ERROR'
+                status_path.write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding='utf-8')
+        else:
+            summary['excel_final_sync']='NO CYCLES'
         notify('DONE',summary)
         return summary
     finally:

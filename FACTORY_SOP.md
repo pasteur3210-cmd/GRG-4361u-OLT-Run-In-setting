@@ -1,3 +1,5 @@
+> **V1.0.24 release note:** At session end, the `07_Session_Final` tab is selected automatically on opening the workbook. Per-cycle results in `01_Loop_Summary` are historical snapshots, not the authoritative final Run-in verdict. `04_Event_Log` contains finalized Continuous Ping trigger/recovery events.
+
 # Factory SOP — V3600GS Connect V1.0.21
 1. Connect V3600GS Console USB and verify `USB-Enhanced-SERIAL` COM, close Tera Term.
 2. Set PC local timezone; plug into AC power. Set Windows 11 Power & battery > Screen, sleep & hibernate to keep system awake during the run, disable scheduled automatic restart, and verify USB/Network stability.

@@ -5,6 +5,7 @@ No Excel framework/runtime dependency, making the bundled Windows EXE straightfo
 """
 from __future__ import annotations
 import html
+import csv
 import os
 import tempfile
 from pathlib import Path
@@ -39,10 +40,10 @@ def cell_xml(ref, value, style=0):
     return f'<c{attr} t="inlineStr"><is><t xml:space="preserve">{val}</t></is></c>'
 
 
-def sheet_xml(rows, *, header=True, freeze=True, col_width=18):
+def sheet_xml(rows, *, header=True, freeze=True, col_width=18, selected=False):
     out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
            '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
-           f'<sheetViews><sheetView workbookViewId="0">'+
+           f'<sheetViews><sheetView workbookViewId="0"'+(' tabSelected="1"' if selected else '')+'>'+
            ('<pane xSplit="4" ySplit="1" topLeftCell="E2" activePane="bottomRight" state="frozen"/>' if freeze else '')+
            '</sheetView></sheetViews>',
            f'<sheetFormatPr defaultRowHeight="16"/>',
@@ -71,15 +72,15 @@ def xlsx_bytes(sheets):
     with ZipFile(buf,'w',ZIP_DEFLATED) as z:
         z.writestr('[Content_Types].xml',f'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>{types}</Types>')
         z.writestr('_rels/.rels','<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
-        z.writestr('xl/workbook.xml',f'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="{ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{sheets_meta}</sheets></workbook>')
+        z.writestr('xl/workbook.xml',f'<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="{ns}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="{len(sheets)-1 if sheets and sheets[-1][0]=="07_Session_Final" else 0}"/></bookViews><sheets>{sheets_meta}</sheets></workbook>')
         z.writestr('xl/_rels/workbook.xml.rels',f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}<Relationship Id="rId{len(sheets)+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
         z.writestr('xl/styles.xml','''<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Aptos"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF17365D"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>''')
         for idx,(_,rows) in enumerate(sheets,1):
-            z.writestr(f'xl/worksheets/sheet{idx}.xml',sheet_xml(rows,freeze=(idx==1),col_width=19 if idx==1 else 21))
+            z.writestr(f'xl/worksheets/sheet{idx}.xml',sheet_xml(rows,freeze=(idx==1),col_width=19 if idx==1 else 21,selected=(idx==len(sheets) and sheets[-1][0]=='07_Session_Final')))
     return buf.getvalue()
 
 
-def build_rows(cycles, expected_onu_ids=None, mapping=None, production_info=None):
+def build_rows(cycles, expected_onu_ids=None, mapping=None, production_info=None, final_summary=None, ping_events=None):
     """Create one summary row per cycle; stable columns keyed by actual ONU ID.
 
     All ONU IDs across the input cycles share a fixed column mapping. A missing
@@ -178,6 +179,23 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None, production_info=None
                                    mapping.get(onu,{}).get('gpon_sn',''),prev or 'NOT OBSERVED',current,
                                    'PING RECOVERY' if current=='PASS' else 'PING STATUS CHANGE'])
             last_ping[onu]=current
+    # Finalized packet-loss events are independent of ONU query intervals.
+    # Preserve original cycle rows; add event history rather than overwriting them.
+    for ev in (ping_events or []):
+        if ev.get('Status') not in ('RECOVERED','OPEN_AT_STOP','RUN_IN_FAIL_CONSECUTIVE','RUN_IN_FAIL_CUMULATIVE'):
+            continue
+        try:
+            onu=int(ev.get('ONU ID',''))
+        except (ValueError,TypeError):
+            continue
+        status=ev.get('Status','')
+        detail=(f"Recovery {ev.get('Recovery','') or 'NOT RECOVERED'} / Duration(s) {ev.get('Elapsed Seconds','')}"
+                if status in ('RECOVERED','OPEN_AT_STOP') else
+                'FAIL threshold reached; see RECOVERED event for recovery time')
+        event_rows.append(['FINAL',ev.get('Start',''),onu,
+                           mapping.get(onu,{}).get('gpon_sn',''),
+                           f"IP {ev.get('DUT IP','')} / Consecutive Loss {ev.get('Consecutive Loss','')}",
+                           detail,'CONTINUOUS PING '+status])
     notes = [['Field', 'Explanation'],
              ['ONU columns', 'Automatically based on all actual ONU IDs; no 10/16 ONU hard limit'],
              ['Missing This Cycle', 'ONU ID not returned this cycle; NOT equivalent to Offline'],
@@ -197,12 +215,36 @@ def build_rows(cycles, expected_onu_ids=None, mapping=None, production_info=None
                      ['Session cycles', len(cycles)]]
     if production_info:
         timezone_rows.extend([['PO',production_info.get('PO','')],['Model Name',production_info.get('Model','')],['Operator',production_info.get('Operator','')]])
-    return [('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_IP_Mapping', mapping_rows), ('04_Event_Log', event_rows), ('05_Field_Notes', notes), ('06_Run_Metadata', timezone_rows)]
+    sheets=[('01_Loop_Summary', summary), ('02_ONU_Detail', detail), ('03_IP_Mapping', mapping_rows), ('04_Event_Log', event_rows), ('05_Field_Notes', notes), ('06_Run_Metadata', timezone_rows)]
+    if final_summary is not None:
+        final_rows=[['Session Final Field','Value'],
+                    ['Session End Status',final_summary.get('status','UNKNOWN')],
+                    ['Final Run-in Result',final_summary.get('last_result','UNKNOWN')],
+                    ['Completed Cycles',final_summary.get('cycles',len(cycles))],
+                    ['Latest OLT Cycle Result',cycles[-1].get('result','UNKNOWN') if cycles else 'NO DATA'],
+                    ['Any Historical OLT Cycle FAIL', 'YES' if any(c.get('result')=='FAIL' for c in cycles) else 'NO'],
+                    ['Ping Assessment Source','Final Continuous Ping snapshot; no new 4-packet check'],
+                    ['PO',production_info.get('PO','')],['Model Name',production_info.get('Model','')],
+                    ['Operator',production_info.get('Operator','')],
+                    [],
+                    ['ONU ID','DUT IP','GPON SN','Current IP Status','Total Sent','Total Failed','Loss %','Max Consecutive Loss','Test Result','Fail Reason','Final Assessment']]
+        results=final_summary.get('ping_final') or {}
+        assessments=final_summary.get('ping_final_assessment') or {}
+        for key,pr in sorted(results.items(),key=lambda pair:int(pair[0])):
+            onu=int(key);sent=pr.get('sent',0);failed=pr.get('loss',0)
+            final_rows.append([onu,mapping.get(onu,{}).get('ip',''),mapping.get(onu,{}).get('gpon_sn',''),
+                               pr.get('result','UNKNOWN'),sent,failed,
+                               round(failed/sent*100,5) if sent else 'N/A',
+                               pr.get('max_consecutive',0),pr.get('test_result','UNKNOWN'),
+                               pr.get('fail_reason',''),assessments.get(onu,assessments.get(str(onu),''))])
+        sheets.append(('07_Session_Final',final_rows))
+    return sheets
 
-def export_cycles(path: Path, cycles: list[dict], mapping=None, production_info=None):
+def export_cycles(path: Path, cycles: list[dict], mapping=None, production_info=None, final_summary=None, ping_events=None):
     path=Path(path)
     path.parent.mkdir(parents=True,exist_ok=True)
-    data=xlsx_bytes(build_rows(cycles, mapping=mapping, production_info=production_info))
+    data=xlsx_bytes(build_rows(cycles, mapping=mapping, production_info=production_info,
+                               final_summary=final_summary,ping_events=ping_events))
     fd,tmp=tempfile.mkstemp(suffix='.xlsx',dir=str(path.parent))
     try:
         with os.fdopen(fd,'wb') as fp:fp.write(data)

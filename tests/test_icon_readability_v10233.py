@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 from PIL import Image
-import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 class IconReadabilityTests(unittest.TestCase):
     def test_complete_windows_icon_sizes(self):
@@ -14,8 +13,10 @@ class IconReadabilityTests(unittest.TestCase):
         for size in [16,24,32]:
             frame=im.ico.getimage((size,size)).convert('RGB')
             self.assertEqual(frame.getpixel((0,0)),(255,255,255))
-            pixels=np.asarray(frame)
-            mask=np.max(pixels,axis=2)<170
-            ys,xs=np.where(mask)
-            self.assertGreaterEqual(ys.max()-ys.min()+1,int(size*.62))
-            self.assertGreaterEqual(xs.max()-xs.min()+1,int(size*.73))
+            points = [(x, y) for y in range(size) for x in range(size)
+                      if max(frame.getpixel((x, y))) < 170]
+            self.assertTrue(points, 'CT mark must have dark pixels')
+            xs = [x for x, _ in points]
+            ys = [y for _, y in points]
+            self.assertGreaterEqual(max(ys)-min(ys)+1,int(size*.62))
+            self.assertGreaterEqual(max(xs)-min(xs)+1,int(size*.73))

@@ -21,7 +21,7 @@ from ping_mapping import STATIC_IP_POOL, discover_static_mapping
 from production_info import validate_production_info
 from serial.tools import list_ports
 
-VERSION = "1.0.23.3"
+VERSION = "1.0.23.4"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200

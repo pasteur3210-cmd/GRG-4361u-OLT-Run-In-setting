@@ -39,7 +39,7 @@ class FakeSerial:
     def close(self):self.closed=True
 
 class Tests(unittest.TestCase):
-    def test_version(self):self.assertEqual(main.VERSION,'1.0.21')
+    def test_version(self):self.assertEqual(main.VERSION,'1.0.23')
     def test_baud(self):self.assertEqual(main.BAUD,115200)
     def test_port(self):
         self.assertTrue(main.valid_port('COM3'))
@@ -77,8 +77,9 @@ class Tests(unittest.TestCase):
     def test_version_workflow(self):
         yaml=Path(__file__).parent.parent/'.github/workflows/build.yml'
         content=yaml.read_text(encoding='utf-8')
-        self.assertIn('V3600GS_Connect_V1.0.21.exe',content)
-        self.assertIn('V3600GS_Connect_V1.0.21 main.py',content)
+        self.assertIn('V3600GS_Connect_V1.0.23.exe',content)
+        self.assertIn('--name V3600GS_Connect_V1.0.23',content)
+        self.assertIn('main.py',content)
     def test_no_ttl_dependency(self):
         source=Path(main.__file__).read_text(encoding='utf-8')
         self.assertNotIn('ttpmacro.exe',source.lower())

@@ -61,3 +61,10 @@ A one-hour scheduled run now waits the full hour before ending Continuous Ping. 
 
 ## V1.0.21 GUI restyling (behavior unchanged)
 Use the two pale-color tabs (blue OLT, mint Ping) and the read-only summary at top of OLT screen. All operations, output files and validation rules are the same as V1.0.20. On Windows displays with nondefault scaling verify no controls are clipped before production use.
+
+## V1.0.22 Display / icon
+The OLT & IP Setup / ONU Check tab scrolls vertically when the content is taller than the viewport; use the right-hand scrollbar or mouse wheel. `HD.ico` is the user-supplied icon included in the GitHub package; the Windows GitHub Actions workflow embeds it into the executable and bundles it for the Tk window titlebar and taskbar.
+
+
+## V1.0.23 CT icon update
+The earlier HD icon is replaced by the approved dark-grey CT monogram on a white background, file `CT.ico`, used by PyInstaller for the EXE and by Tk for the titlebar/taskbar. All V1.0.22 workarea scrolling and existing test functions are retained unchanged.

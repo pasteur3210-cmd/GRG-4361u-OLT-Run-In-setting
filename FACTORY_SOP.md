@@ -52,3 +52,10 @@
 
 ## V1.0.21 GUI restyling (behavior unchanged)
 Use the two pale-color tabs (blue OLT, mint Ping) and the read-only summary at top of OLT screen. All operations, output files and validation rules are the same as V1.0.20. On Windows displays with nondefault scaling verify no controls are clipped before production use.
+
+## V1.0.22 shorter workstation screens
+Use the scrollbar at the right side of the OLT page to reach RESULT / STATUS and Execution Log if the Windows taskbar or display scaling limits the viewport. Switching to Live Ping Monitor does not interrupt the test. Check the HD icon on the Windows EXE file, titlebar and taskbar after building with GitHub Actions.
+
+
+## V1.0.23 CT icon update
+The earlier HD icon is replaced by the approved dark-grey CT monogram on a white background, file `CT.ico`, used by PyInstaller for the EXE and by Tk for the titlebar/taskbar. All V1.0.22 workarea scrolling and existing test functions are retained unchanged.

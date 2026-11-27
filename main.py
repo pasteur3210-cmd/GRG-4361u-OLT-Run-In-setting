@@ -21,7 +21,7 @@ from ping_mapping import STATIC_IP_POOL, discover_static_mapping
 from production_info import validate_production_info
 from serial.tools import list_ports
 
-VERSION = "1.0.21"
+VERSION = "1.0.23"
 BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RECORD_ROOT = BASE / "records"
 BAUD = 115200
@@ -260,8 +260,11 @@ class GUI:
     def __init__(self, root):
         self.root = root
         root.title('V3600GS Connect V'+VERSION+' — ONU Run-in')
-        root.geometry('1320x860')
-        root.minsize(1060,740)
+        # Respect shorter factory displays.  The OLT page has its own scroll area
+        # so status/logs are not lost behind the Windows taskbar.
+        root.geometry(f'{min(1320,max(980,root.winfo_screenwidth()-60))}x{min(800,max(620,root.winfo_screenheight()-110))}')
+        root.minsize(960,600)
+        apply_window_icon(root)
         root.configure(bg='#edf3fa')
         self.messages = queue.Queue()
         self.stop_flag = threading.Event()
@@ -296,8 +299,22 @@ class GUI:
             self.nav_btns.append(btn)
         self.tabs=ttk.Notebook(root,style='RuninHidden.TNotebook')
         self.tabs.pack(fill='both',expand=True)
-        frm=ttk.Frame(self.tabs,padding=12,style='OltPage.TFrame')
-        self.tabs.add(frm,text='OLT & IP Setup / ONU Check')
+        # A scrollable OLT page avoids bottom status/log clipping on 900px and
+        # lower Windows desktop work areas, without changing test controls.
+        olt_outer=ttk.Frame(self.tabs,style='OltPage.TFrame')
+        self.tabs.add(olt_outer,text='OLT & IP Setup / ONU Check')
+        self.olt_canvas=tk.Canvas(olt_outer,bg='#eff5ff',highlightthickness=0,borderwidth=0)
+        olt_scroll=ttk.Scrollbar(olt_outer,orient='vertical',command=self.olt_canvas.yview)
+        self.olt_canvas.configure(yscrollcommand=olt_scroll.set)
+        olt_scroll.pack(side='right',fill='y')
+        self.olt_canvas.pack(side='left',fill='both',expand=True)
+        frm=ttk.Frame(self.olt_canvas,padding=12,style='OltPage.TFrame')
+        olt_window=self.olt_canvas.create_window((0,0),window=frm,anchor='nw')
+        frm.bind('<Configure>',lambda _e:self.olt_canvas.configure(scrollregion=self.olt_canvas.bbox('all')))
+        self.olt_canvas.bind('<Configure>',lambda e:self.olt_canvas.itemconfigure(olt_window,width=e.width))
+        self.root.bind_all('<MouseWheel>',self._scroll_olt_if_hovered,add='+')
+        self.root.bind_all('<Button-4>',self._scroll_olt_if_hovered,add='+')
+        self.root.bind_all('<Button-5>',self._scroll_olt_if_hovered,add='+')
         self.ping_page=ttk.Frame(self.tabs,padding=12,style='PingPage.TFrame')
         self.tabs.add(self.ping_page,text='Live Ping Monitor')
         self.tabs.bind('<<NotebookTabChanged>>',lambda _event:self.update_nav())
@@ -406,6 +423,23 @@ class GUI:
         self.refresh()
         self.update_mode()
         root.after(100,self.poll)
+
+    def _scroll_olt_if_hovered(self,event):
+        """Wheel-scroll OLT controls, not the Ping page or unrelated widgets."""
+        try:
+            if self.tabs.index(self.tabs.select())!=0:
+                return
+            under=self.root.winfo_containing(self.root.winfo_pointerx(),self.root.winfo_pointery())
+            widget=under
+            while widget is not None:
+                if widget is self.olt_canvas:
+                    delta=(-1 if event.num==4 else 1 if event.num==5 else -int(event.delta / 120))
+                    if delta:
+                        self.olt_canvas.yview_scroll(delta,'units')
+                    return 'break'
+                widget=widget.master
+        except (tk.TclError,AttributeError):
+            return
 
     @staticmethod
     def _configure_visual_styles(style):
@@ -741,7 +775,25 @@ class GUI:
         self.root.after(100,self.poll)
 
 
+def apply_window_icon(root):
+    # PyInstaller --onefile extracts --add-data into sys._MEIPASS.
+    icon_base=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))
+    icon_path=icon_base/'CT.ico'
+    if icon_path.is_file():
+        try:
+            root.iconbitmap(default=str(icon_path))
+        except tk.TclError:
+            pass  # e.g. headless Linux tests (Windows is the target environment)
+
+
 def main():
+    # AppUserModelID lets Windows associate the taskbar icon with this EXE.
+    if sys.platform=='win32':
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('V3600GS.Connect.RunIn')
+        except (OSError,AttributeError):
+            pass
     root=tk.Tk()
     GUI(root)
     root.mainloop()
